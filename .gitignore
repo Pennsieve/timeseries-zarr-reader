@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test / coverage reports
+coverage/
+*.lcov
+
+# Caches
+.cache/
+.eslintcache
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Swap
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# OSX
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+
+# Agent tooling (dev-only, not shipped)
+CLAUDE.md
+.claude/
