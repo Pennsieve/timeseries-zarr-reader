@@ -1,0 +1,145 @@
+import { expect, test } from "vitest";
+import { makeFilter } from "./filter";
+
+const RATE_HZ = 1000;
+
+/** One second of a unit-amplitude sine at `freqHz`, sampled at RATE_HZ. */
+const sine = (freqHz: number, n = 4000): Float64Array => {
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = Math.sin((2 * Math.PI * freqHz * i) / RATE_HZ);
+  }
+  return out;
+};
+
+/** Peak amplitude over the second half, once the filter has settled. */
+const settledAmplitude = (samples: Float64Array): number => {
+  let peak = 0;
+  for (let i = Math.floor(samples.length / 2); i < samples.length; i++) {
+    peak = Math.max(peak, Math.abs(samples[i] as number));
+  }
+  return peak;
+};
+
+/** Settled amplitude of a sine at `freqHz` after passing through the given filter. */
+const amplitudeAt = (
+  freqHz: number,
+  spec: Parameters<typeof makeFilter>[0],
+): number => settledAmplitude(makeFilter(spec, RATE_HZ).process(sine(freqHz)));
+
+test("lowpass passes frequencies below the cutoff and attenuates those above", () => {
+  const spec = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
+  expect(amplitudeAt(20, spec)).toBeGreaterThan(0.9);
+  expect(amplitudeAt(200, spec)).toBeLessThan(0.05);
+});
+
+test("highpass attenuates frequencies below the cutoff and passes those above", () => {
+  const spec = { type: "highpass", order: 4, cutoffHz: 50 } as const;
+  expect(amplitudeAt(5, spec)).toBeLessThan(0.05);
+  expect(amplitudeAt(200, spec)).toBeGreaterThan(0.9);
+});
+
+test("bandpass passes the band and attenuates both sides of it", () => {
+  const spec = { type: "bandpass", order: 2, lowHz: 20, highHz: 80 } as const;
+  expect(amplitudeAt(40, spec)).toBeGreaterThan(0.9);
+  expect(amplitudeAt(2, spec)).toBeLessThan(0.05);
+  expect(amplitudeAt(400, spec)).toBeLessThan(0.05);
+});
+
+test("bandstop attenuates the band and passes both sides of it", () => {
+  const spec = { type: "bandstop", order: 4, lowHz: 20, highHz: 80 } as const;
+  expect(amplitudeAt(40, spec)).toBeLessThan(0.05);
+  expect(amplitudeAt(2, spec)).toBeGreaterThan(0.9);
+  expect(amplitudeAt(400, spec)).toBeGreaterThan(0.9);
+});
+
+test("returns a new Float64Array and leaves the input untouched", () => {
+  const filter = makeFilter(
+    { type: "lowpass", order: 4, cutoffHz: 50 },
+    RATE_HZ,
+  );
+  const input = sine(20, 64);
+  const copy = Float64Array.from(input);
+  const out = filter.process(input);
+  expect(out).toBeInstanceOf(Float64Array);
+  expect(out).not.toBe(input);
+  expect(Array.from(input)).toEqual(Array.from(copy));
+});
+
+test("returns an empty result for an empty chunk", () => {
+  const filter = makeFilter(
+    { type: "lowpass", order: 4, cutoffHz: 50 },
+    RATE_HZ,
+  );
+  expect(filter.process(new Float64Array(0)).length).toBe(0);
+});
+
+test("carries state across chunks, matching the same signal filtered whole", () => {
+  const spec = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
+  const signal = sine(20, 200);
+  const whole = makeFilter(spec, RATE_HZ).process(signal);
+
+  const chunked = makeFilter(spec, RATE_HZ);
+  const first = chunked.process(signal.slice(0, 80));
+  const second = chunked.process(signal.slice(80));
+
+  const joined = [...first, ...second];
+  expect(joined.length).toBe(whole.length);
+  for (let i = 0; i < whole.length; i++) {
+    expect(joined[i]).toBeCloseTo(whole[i] as number, 12);
+  }
+});
+
+test("reset discards carried state, so the next chunk filters as the first did", () => {
+  const spec = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
+  const signal = sine(20, 200);
+  const fresh = makeFilter(spec, RATE_HZ).process(signal);
+
+  const reused = makeFilter(spec, RATE_HZ);
+  reused.process(signal);
+  reused.reset();
+  const afterReset = reused.process(signal);
+
+  for (let i = 0; i < fresh.length; i++) {
+    expect(afterReset[i]).toBeCloseTo(fresh[i] as number, 12);
+  }
+});
+
+test("rejects an order outside the supported range", () => {
+  expect(() =>
+    makeFilter({ type: "lowpass", order: 0, cutoffHz: 50 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "lowpass", order: 13, cutoffHz: 50 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "lowpass", order: 2.5, cutoffHz: 50 }, RATE_HZ),
+  ).toThrow(RangeError);
+});
+
+test("rejects a frequency at or above the Nyquist frequency", () => {
+  expect(() =>
+    makeFilter({ type: "lowpass", order: 4, cutoffHz: 500 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "highpass", order: 4, cutoffHz: 600 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "lowpass", order: 4, cutoffHz: 0 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "bandpass", order: 2, lowHz: 20, highHz: 500 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "bandstop", order: 2, lowHz: 0, highHz: 80 }, RATE_HZ),
+  ).toThrow(RangeError);
+});
+
+test("rejects a band whose low edge is not below its high edge", () => {
+  expect(() =>
+    makeFilter({ type: "bandpass", order: 2, lowHz: 80, highHz: 20 }, RATE_HZ),
+  ).toThrow(RangeError);
+  expect(() =>
+    makeFilter({ type: "bandstop", order: 2, lowHz: 40, highHz: 40 }, RATE_HZ),
+  ).toThrow(RangeError);
+});
