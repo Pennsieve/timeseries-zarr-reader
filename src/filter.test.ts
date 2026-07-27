@@ -1,7 +1,11 @@
 import { expect, test } from "vitest";
-import { makeFilter } from "./filter";
+import type { Segment } from "./types";
+import { FILTER_GAP_RESET_SAMPLES } from "./constants";
+import { createFilterSession, makeFilter } from "./filter";
 
 const RATE_HZ = 1000;
+const PERIOD_US = 1000;
+const LOWPASS = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
 
 /** One second of a unit-amplitude sine at `freqHz`, sampled at RATE_HZ. */
 const sine = (freqHz: number, n = 4000): Float64Array => {
@@ -142,4 +146,207 @@ test("rejects a band whose low edge is not below its high edge", () => {
   expect(() =>
     makeFilter({ type: "bandstop", order: 2, lowHz: 40, highHz: 40 }, RATE_HZ),
   ).toThrow(RangeError);
+});
+
+const segment = (
+  channel: string,
+  startUs: number,
+  data: Float64Array,
+  samplePeriodUs = PERIOD_US,
+): Segment => ({
+  channel,
+  startUs,
+  samplePeriodUs,
+  isMinMax: false,
+  data,
+});
+
+/** A signal split at sample 80, with the second part's contiguous start time. */
+const split = (n = 200) => {
+  const signal = sine(20, n);
+  return {
+    signal,
+    first: signal.slice(0, 80),
+    second: signal.slice(80),
+    secondStartUs: 80 * PERIOD_US,
+  };
+};
+
+const expectSamplesClose = (
+  actual: Float64Array,
+  expected: Float64Array,
+): void => {
+  expect(actual.length).toBe(expected.length);
+  for (let i = 0; i < expected.length; i++) {
+    expect(actual[i]).toBeCloseTo(expected[i] as number, 12);
+  }
+};
+
+test("filters the segment while carrying over its channel, start and period", () => {
+  const session = createFilterSession();
+  const out = session.apply(segment("c", 7, sine(20, 64)), LOWPASS, RATE_HZ);
+  expect(out.channel).toBe("c");
+  expect(out.startUs).toBe(7);
+  expect(out.samplePeriodUs).toBe(PERIOD_US);
+  expect(out.isMinMax).toBe(false);
+  expectSamplesClose(
+    out.data,
+    makeFilter(LOWPASS, RATE_HZ).process(sine(20, 64)),
+  );
+});
+
+test("carries state across contiguous segments", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = makeFilter(LOWPASS, RATE_HZ).process(signal);
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, whole.slice(80));
+});
+
+test("carries state across a gap within the reset threshold", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = makeFilter(LOWPASS, RATE_HZ).process(signal);
+  const gapUs = (FILTER_GAP_RESET_SAMPLES - 1) * PERIOD_US;
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs + gapUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, whole.slice(80));
+});
+
+test("clears state after a gap beyond the reset threshold", () => {
+  const { first, second, secondStartUs } = split();
+  const gapUs = (FILTER_GAP_RESET_SAMPLES + 1) * PERIOD_US;
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs + gapUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, makeFilter(LOWPASS, RATE_HZ).process(second));
+});
+
+test("clears state when a segment starts before the previous one ended", () => {
+  const { first, second } = split();
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", 40 * PERIOD_US, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, makeFilter(LOWPASS, RATE_HZ).process(second));
+});
+
+test("holds state separately per channel", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = makeFilter(LOWPASS, RATE_HZ).process(signal);
+
+  const session = createFilterSession();
+  session.apply(segment("a", 0, first), LOWPASS, RATE_HZ);
+  session.apply(segment("b", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("a", secondStartUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, whole.slice(80));
+});
+
+test("holds state separately per spec", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const other = { type: "bandpass", order: 2, lowHz: 20, highHz: 80 } as const;
+  const whole = makeFilter(LOWPASS, RATE_HZ).process(signal);
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const otherOut = session.apply(segment("c", 0, first), other, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(otherOut.data, makeFilter(other, RATE_HZ).process(first));
+  expectSamplesClose(out.data, whole.slice(80));
+});
+
+test("holds state separately per rate", () => {
+  const { first, second, secondStartUs } = split();
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs, second, 2000),
+    LOWPASS,
+    500,
+  );
+
+  expectSamplesClose(out.data, makeFilter(LOWPASS, 500).process(second));
+});
+
+test("clear drops held state, so the next segment filters from nothing", () => {
+  const { first, second, secondStartUs } = split();
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  session.clear();
+  const out = session.apply(
+    segment("c", secondStartUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, makeFilter(LOWPASS, RATE_HZ).process(second));
+});
+
+test("passes an empty segment through without disturbing the state", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = makeFilter(LOWPASS, RATE_HZ).process(signal);
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const empty = session.apply(
+    segment("c", secondStartUs, new Float64Array(0)),
+    LOWPASS,
+    RATE_HZ,
+  );
+  const out = session.apply(
+    segment("c", secondStartUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expect(empty.data.length).toBe(0);
+  expectSamplesClose(out.data, whole.slice(80));
+});
+
+test("rejects a min/max segment", () => {
+  const session = createFilterSession();
+  const envelope: Segment = {
+    channel: "c",
+    startUs: 0,
+    samplePeriodUs: PERIOD_US,
+    isMinMax: true,
+    data: new Float64Array([1, 2, 3, 4]),
+  };
+  expect(() => session.apply(envelope, LOWPASS, RATE_HZ)).toThrow(RangeError);
 });

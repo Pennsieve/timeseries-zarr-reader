@@ -1,5 +1,6 @@
 import { CalcCascades, IirFilter } from "fili";
-import type { FilterSpec } from "./types";
+import type { FilterSpec, Segment } from "./types";
+import { FILTER_GAP_RESET_SAMPLES } from "./constants";
 
 /**
  * The single characteristic the reader currently offers.
@@ -128,5 +129,86 @@ export function makeFilter(spec: FilterSpec, rateHz: number): Filter {
   return {
     process: (samples) => Float64Array.from(filter.multiStep(samples)),
     reset: () => filter.reinit(),
+  };
+}
+
+/**
+ * Holds the filter state for a session, one filter per (channel, spec, rate).
+ *
+ * A recursive filter's output depends on the samples before it.
+ * A stream arriving in chunks must maintain state between chunks.
+ *
+ * Sessions are independent. Two sessions filtering the same channel do not share state.
+ */
+export type FilterSession = {
+  /**
+   * Filters one raw segment.
+   * Returns the filter with its samples replaced.
+   *
+   * State carries from the previous segment of the same session when this segment
+   * is within `FILTER_GAP_RESET_SAMPLES` `samplePeriodUs` steps
+   * from where the previous segment ended.
+   *
+   * An initial chunk, one with a wider gap, or a jump backwards,
+   * all filter from a cleared state.
+   *
+   * An empty segment returns empty and leaves the state as it was.
+   * Throws a RangeError for a min/max segment.
+   */
+  apply(segment: Segment, spec: FilterSpec, rateHz: number): Segment;
+  /** Drop all held state. */
+  clear(): void;
+};
+
+/** Canonical key for a spec, independent of the order its properties were written in. */
+const specKey = (spec: FilterSpec): string =>
+  spec.type === "lowpass" || spec.type === "highpass"
+    ? `${spec.type}:${spec.order}:${spec.cutoffHz}`
+    : `${spec.type}:${spec.order}:${spec.lowHz}:${spec.highHz}`;
+
+/**
+ * Create a filter session.
+ *
+ * One filter accumulates per (channel, spec, rate) applied; `clear` releases them all.
+ */
+export function createFilterSession(): FilterSession {
+  const entries = new Map<string, { filter: Filter; nextStartUs: number }>();
+
+  return {
+    apply(segment, spec, rateHz) {
+      if (segment.isMinMax) {
+        throw new RangeError(
+          `only raw segments can be filtered (channel ${segment.channel} carries min/max pairs)`,
+        );
+      }
+      if (segment.data.length === 0) {
+        return { ...segment };
+      }
+
+      // Channel last: the spec and rate parts have a fixed shape, so a channel key
+      // containing the separator cannot be read as another entry's key.
+      const key = `${specKey(spec)}|${rateHz}|${segment.channel}`;
+      let entry = entries.get(key);
+
+      if (entry === undefined) {
+        // A filter starts cleared, so a first sighting needs no continuity check.
+        entry = { filter: makeFilter(spec, rateHz), nextStartUs: 0 };
+        entries.set(key, entry);
+      } else {
+        const driftUs = segment.startUs - entry.nextStartUs;
+        const allowedUs = FILTER_GAP_RESET_SAMPLES * segment.samplePeriodUs;
+        if (driftUs < 0 || driftUs > allowedUs) {
+          entry.filter.reset();
+        }
+      }
+
+      entry.nextStartUs =
+        segment.startUs + segment.data.length * segment.samplePeriodUs;
+      return { ...segment, data: entry.filter.process(segment.data) };
+    },
+
+    clear() {
+      entries.clear();
+    },
   };
 }
