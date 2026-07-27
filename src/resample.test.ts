@@ -1,22 +1,12 @@
 import { expect, test } from "vitest";
-import type { Segment } from "./types";
+import { makeSegment } from "./test-utils";
 import { resampleToPixels } from "./resample";
 
-const raw = (data: number[], samplePeriodUs = 1000): Segment => ({
-  channel: "c",
-  startUs: 0,
-  samplePeriodUs,
-  isMinMax: false,
-  data: new Float64Array(data),
-});
+const raw = (data: number[], samplePeriodUs = 1000) =>
+  makeSegment({ samplePeriodUs, data: new Float64Array(data) });
 
-const envelope = (data: number[], samplePeriodUs = 1000): Segment => ({
-  channel: "c",
-  startUs: 0,
-  samplePeriodUs,
-  isMinMax: true,
-  data: new Float64Array(data),
-});
+const envelope = (data: number[], samplePeriodUs = 1000) =>
+  makeSegment({ samplePeriodUs, isMinMax: true, data: new Float64Array(data) });
 
 test("reduces raw samples to one min/max pair per pixel", () => {
   const out = resampleToPixels(raw([5, 1, 2, 8]), 2000);

@@ -1,14 +1,8 @@
 import { expect, test } from "vitest";
-import type { Segment } from "./types";
+import { makeSegment } from "./test-utils";
 import { trimToBounds } from "./trim";
 
-const raw = (data: number[]): Segment => ({
-  channel: "c",
-  startUs: 0,
-  samplePeriodUs: 1000,
-  isMinMax: false,
-  data: new Float64Array(data),
-});
+const raw = (data: number[]) => makeSegment({ data: new Float64Array(data) });
 
 test("returns the segment unchanged when the window covers every bin", () => {
   const out = trimToBounds(raw([10, 20, 30, 40, 50]), 0, 5000);
@@ -37,13 +31,10 @@ test("keeps edge bins that only partially overlap the window", () => {
 });
 
 test("drops min/max bins two values at a time", () => {
-  const seg: Segment = {
-    channel: "c",
-    startUs: 0,
-    samplePeriodUs: 1000,
+  const seg = makeSegment({
     isMinMax: true,
     data: new Float64Array([10, 11, 20, 21, 30, 31, 40, 41]),
-  };
+  });
   const out = trimToBounds(seg, 1000, 3000);
   expect(Array.from(out.data)).toEqual([20, 21, 30, 31]);
   expect(out.startUs).toBe(1000);

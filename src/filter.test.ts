@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { Segment } from "./types";
 import { FILTER_GAP_RESET_SAMPLES } from "./constants";
+import { makeSegment } from "./test-utils";
 import { createFilterSession, makeFilter } from "./filter";
 
 const RATE_HZ = 1000;
@@ -153,13 +153,7 @@ const segment = (
   startUs: number,
   data: Float64Array,
   samplePeriodUs = PERIOD_US,
-): Segment => ({
-  channel,
-  startUs,
-  samplePeriodUs,
-  isMinMax: false,
-  data,
-});
+) => makeSegment({ channel, startUs, samplePeriodUs, data });
 
 /** A signal split at sample 80, with the second part's contiguous start time. */
 const split = (n = 200) => {
@@ -341,12 +335,9 @@ test("passes an empty segment through without disturbing the state", () => {
 
 test("rejects a min/max segment", () => {
   const session = createFilterSession();
-  const envelope: Segment = {
-    channel: "c",
-    startUs: 0,
-    samplePeriodUs: PERIOD_US,
+  const envelope = makeSegment({
     isMinMax: true,
     data: new Float64Array([1, 2, 3, 4]),
-  };
+  });
   expect(() => session.apply(envelope, LOWPASS, RATE_HZ)).toThrow(RangeError);
 });
