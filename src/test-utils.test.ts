@@ -28,6 +28,29 @@ test("keeps an empty file distinct from an absent one", async () => {
   expect(await store.get("/absent")).toBeUndefined();
 });
 
+test("serves a byte window from a key", async () => {
+  const store = createMemoryStore({
+    "/a.bin": new Uint8Array([1, 2, 3, 4, 5]),
+  });
+  const bytes = await store.getRange("/a.bin", { offset: 1, length: 3 });
+  expect(Array.from(bytes ?? [])).toEqual([2, 3, 4]);
+});
+
+test("serves a suffix, which is how a shard index is read", async () => {
+  const store = createMemoryStore({
+    "/a.bin": new Uint8Array([1, 2, 3, 4, 5]),
+  });
+  const bytes = await store.getRange("/a.bin", { suffixLength: 2 });
+  expect(Array.from(bytes ?? [])).toEqual([4, 5]);
+});
+
+test("resolves undefined for a range of an absent key", async () => {
+  const store = createMemoryStore({});
+  await expect(
+    store.getRange("/missing", { offset: 0, length: 1 }),
+  ).resolves.toBeUndefined();
+});
+
 test("resolves a copy, so mutating a read cannot corrupt the fixture", async () => {
   const store = createMemoryStore({ "/a.bin": new Uint8Array([1, 2, 3]) });
 

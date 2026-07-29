@@ -1,11 +1,13 @@
 import { test, expect, expectTypeOf } from "vitest";
 import type {
+  ByteRange,
   ChannelInfo,
   Event,
   FilterSpec,
   MontagePair,
   Segment,
   Store,
+  StoreOptions,
 } from "./types";
 
 test("Segment has the documented shape", () => {
@@ -82,22 +84,45 @@ test("Event has the documented shape", () => {
   expect(ev.pointsPerEvent).toBe(0);
 });
 
-test("Store is a get(key)-shaped readable that returns bytes or undefined", async () => {
+test("Store reads whole keys and ranges, returning bytes or undefined", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4]);
   const store: Store = {
-    get: async (key) =>
-      key === "/zarr.json" ? new Uint8Array([1]) : undefined,
+    get: async (key) => (key === "/zarr.json" ? bytes : undefined),
+    getRange: async (key, range) =>
+      key === "/zarr.json" || !("offset" in range)
+        ? bytes.slice(0, 2)
+        : undefined,
   };
   expectTypeOf<Awaited<ReturnType<Store["get"]>>>().toEqualTypeOf<
     Uint8Array | undefined
   >();
-  await expect(store.get("/zarr.json")).resolves.toEqual(new Uint8Array([1]));
+  expectTypeOf<Awaited<ReturnType<Store["getRange"]>>>().toEqualTypeOf<
+    Uint8Array | undefined
+  >();
+
+  await expect(store.get("/zarr.json")).resolves.toEqual(bytes);
   await expect(store.get("/missing")).resolves.toBeUndefined();
+  await expect(
+    store.getRange("/zarr.json", { offset: 0, length: 2 }),
+  ).resolves.toEqual(new Uint8Array([1, 2]));
+  await expect(
+    store.getRange("/missing", { offset: 0, length: 2 }),
+  ).resolves.toBeUndefined();
 });
 
-test("Store mirrors a zarrita Readable-like shape", () => {
-  // Local mimic of zarrita's Readable; replaced by a real conformance check in zarr.ts.
-  type ReadableLike = {
-    get(key: `/${string}`, opts?: unknown): Promise<Uint8Array | undefined>;
-  };
-  expectTypeOf<Store>().toEqualTypeOf<ReadableLike>();
+test("Store offers the whole-key and ranged reads a sharded bundle needs", () => {
+  // Mirrors zarrita 0.7's AsyncReadable, whose getRange is optional; the reader requires it
+  // because every bundle array is sharded. Real conformance is enforced where zarr.ts hands a
+  // Store to zarrita - that call site fails to compile if these drift apart.
+  expectTypeOf<Store>().toEqualTypeOf<{
+    get(
+      key: `/${string}`,
+      opts?: StoreOptions,
+    ): Promise<Uint8Array | undefined>;
+    getRange(
+      key: `/${string}`,
+      range: ByteRange,
+      opts?: StoreOptions,
+    ): Promise<Uint8Array | undefined>;
+  }>();
 });

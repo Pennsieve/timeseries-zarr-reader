@@ -25,6 +25,16 @@ const zarritaGuard = {
     "Import zarrita only in src/zarr.ts and src/stores/**. Every other module must be testable against an in-memory Store.",
 };
 
+/**
+ * Node builtins belong to src/stores/** alone. @types/node makes Node globals visible
+ * everywhere, so this rule is what keeps the rest of the reader runnable in a browser.
+ */
+const nodeGuard = {
+  group: ["node:*", "fs", "fs/*", "path", "os", "url", "buffer", "stream"],
+  message:
+    "Import Node builtins only in src/stores/**. The rest of the reader must run in a browser.",
+};
+
 export default tseslint.config(
   { ignores: ["dist/**", "coverage/**"] },
   {
@@ -33,12 +43,23 @@ export default tseslint.config(
     rules: {
       "no-restricted-imports": [
         "error",
-        { patterns: [agnosticGuard, zarritaGuard] },
+        { patterns: [agnosticGuard, zarritaGuard, nodeGuard] },
       ],
     },
   },
   {
-    files: ["src/zarr.ts", "src/stores/**/*.ts"],
+    // zarrita is allowed here, Node builtins are not.
+    files: ["src/zarr.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { patterns: [agnosticGuard, nodeGuard] },
+      ],
+    },
+  },
+  {
+    // The only place that may reach the filesystem.
+    files: ["src/stores/**/*.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [agnosticGuard] }],
     },

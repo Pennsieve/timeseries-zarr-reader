@@ -106,17 +106,33 @@ export type Event = {
   data: Float64Array;
 };
 
+/** Bytes to read from a key: a window, or the last `suffixLength` bytes. */
+export type ByteRange =
+  { offset: number; length: number } | { suffixLength: number };
+
+/** Per-read options a Store honours. */
+export type StoreOptions = {
+  signal?: AbortSignal;
+};
+
 /**
- *  A structural subset of zarrita's `Readable`.
- *  The minimal read-only storage surface the reader depends on.
- *  Defined here so this module does not need to import zarrita.
+ * The read-only storage surface the reader depends on, named here so this module imports no
+ * zarrita.
  *
- * `get` resolves to the bytes stored at an absolute key, or `undefined` when the key is
- * absent (a missing key is not an error). Authentication, HTTP range requests, and
- * networking are the Store's concern; the reader never sees URLs or credentials.
+ * Both reads resolve to `undefined` for an absent key rather than throwing, since a missing
+ * key is an ordinary answer. Authentication, transport, and URLs are the Store's business; the
+ * reader never sees a credential.
  *
- * zarr.ts adapts a real zarrita store to this type.
+ * **`getRange` is required, not a nicety.** Every array in a bundle is sharded, and a shard is
+ * read by fetching its index and then the inner chunk, so a Store offering only whole-key reads
+ * cannot read bundle data at all - it can only read metadata. A Store that cannot serve ranges
+ * therefore cannot back this reader.
  */
 export type Store = {
-  get(key: `/${string}`, opts?: unknown): Promise<Uint8Array | undefined>;
+  get(key: `/${string}`, opts?: StoreOptions): Promise<Uint8Array | undefined>;
+  getRange(
+    key: `/${string}`,
+    range: ByteRange,
+    opts?: StoreOptions,
+  ): Promise<Uint8Array | undefined>;
 };

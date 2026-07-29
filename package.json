@@ -14,6 +14,7 @@
     "check": "eslint . && prettier --check . && tsc --noEmit && vitest run"
   },
   "devDependencies": {
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
@@ -24,6 +25,8 @@
   },
   "packageManager": "pnpm@11.15.1+sha512.81350b07e53c9538a02f1f2303b4290fa2d7be04e56e2a970c4cc4b417dc761de196edabd49d55c7dc9580db81007c44143e4e3d7e462b3000d23c255122d065",
   "dependencies": {
-    "fili": "^2.0.3"
+    "fili": "^2.0.3",
+    "p-limit": "^7.3.1",
+    "zarrita": "^0.7.3"
   }
 }
