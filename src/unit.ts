@@ -1,31 +1,27 @@
-import { SEND_SPIKE_THRESHOLD } from "./constants.js";
+import { MIN_WAVEFORM_PIXELS } from "./constants.js";
 import type { UnitArrays } from "./catalog.js";
 import type { Event, Store, StoreOptions } from "./types.js";
 import type { TimestampReader } from "./zarr.js";
 import { openTimestamps, readRows } from "./zarr.js";
 
 /**
- * Decide whether spike waveforms are worth fetching for a display resolution.
+ * Reports whether spike waveforms should be fetched at a display resolution.
  *
- * A waveform earns its bytes only when it is wide enough on screen to be seen as a shape
- * rather than a tick: when the waveform's duration spans more than `SEND_SPIKE_THRESHOLD`
- * pixels. Zoomed out, events render as marks and the waveform data would be invisible.
+ * Returns true when one waveform's duration spans more than
+ * {@link MIN_WAVEFORM_PIXELS} pixels of `pixelWidthUs` each.
  */
 export function shouldFetchWaveforms(
   pixelWidthUs: number,
   pointsPerEvent: number,
   periodUs: number,
 ): boolean {
-  return pixelWidthUs * SEND_SPIKE_THRESHOLD < pointsPerEvent * periodUs;
+  return pixelWidthUs * MIN_WAVEFORM_PIXELS < pointsPerEvent * periodUs;
 }
 
 /**
- * Index of the first timestamp at or after `timeUs`, by binary search.
- *
- * Reads one element per probe, so a window is located in log2(n) small reads rather than by
- * scanning the array. Returns `reader.count` when every timestamp is earlier. With the window's
- * end it yields the half-open event range: `endUs` exclusive means an event exactly at the end
- * falls outside.
+ * Returns the index of the first timestamp at or after `timeUs`, by binary
+ * search over single-element reads. Returns `reader.count` when every
+ * timestamp is earlier.
  */
 export async function firstIndexAtOrAfter(
   reader: TimestampReader,
@@ -36,7 +32,8 @@ export async function firstIndexAtOrAfter(
   while (low < high) {
     const middle = (low + high) >>> 1;
     const probe = await reader.read(middle, middle + 1);
-    if ((probe[0] as number) < timeUs) {
+    // middle < high <= reader.count; the single-element read is never empty.
+    if (probe[0]! < timeUs) {
       low = middle + 1;
     } else {
       high = middle;
@@ -46,16 +43,14 @@ export async function firstIndexAtOrAfter(
 }
 
 /**
- * Read one unit channel's events over a time window.
+ * Reads one unit channel's events over a time window.
  *
- * Two binary searches locate the window in the events array, one slice reads the timestamps,
- * and waveforms are fetched only when {@link shouldFetchWaveforms} says the zoom level makes
- * them visible. `pointsPerEvent` is 0 whenever waveforms were not fetched, including when the
- * window holds no events at all.
- *
- * `channel` on the result is the channel id; `samplePeriodUs` is the waveform sample period
- * whether or not waveforms were fetched. Waveforms are never resampled, so `isResampled` is
- * always false.
+ * The window is half-open: an event exactly at `endUs` is excluded. Waveforms
+ * are fetched only when the window holds events and
+ * {@link shouldFetchWaveforms} returns true for `pixelWidthUs`; otherwise
+ * `pointsPerEvent` is 0 and `data` is empty. `samplePeriodUs` is the waveform
+ * sample period whether or not waveforms were fetched. `isResampled` is always
+ * false.
  */
 export async function queryUnitChannel(
   store: Store,

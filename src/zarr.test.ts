@@ -8,8 +8,8 @@ import {
 import { openTimestamps, readBins, readRows } from "./zarr.js";
 
 /**
- * A store holding three unsharded arrays: a raw level in two chunks, an envelope level, and one
- * with a rank the reader has no layout for.
+ * A store of unsharded arrays: a raw level split across two chunks, an envelope level, a
+ * rank-3 array, malformed metadata, int64 timestamp arrays, and a rank-2 row array.
  */
 const store = createMemoryStore({
   "/raw/zarr.json": arrayMetadata([6], [3], { period_us: 1000 }),
@@ -56,8 +56,8 @@ test("rejects when there is no array at the path", async () => {
   ).rejects.toThrow(/absent/);
 });
 
-test("passes a failure other than a missing array straight through", async () => {
-  // The missing-array case is rewrapped to name the path; nothing else should be.
+test("propagates a failure other than a missing array unchanged", async () => {
+  // Malformed metadata surfaces as a JSON parse error, not a NotFoundError.
   await expect(
     readBins(store, "/malformed", { start: 0, end: 1 }),
   ).rejects.toThrow(/JSON/);
@@ -91,7 +91,7 @@ test("rejects a timestamp that does not fit a safe integer", async () => {
   await expect(reader.read(0, 1)).rejects.toThrow(RangeError);
 });
 
-test("rejects a missing timestamp array, naming the path", async () => {
+test("rejects a missing timestamp array", async () => {
   await expect(openTimestamps(store, "/nowhere")).rejects.toThrow(/nowhere/);
 });
 
@@ -105,7 +105,7 @@ test("reads whole waveform rows, flattened row-major", async () => {
   expect(Array.from(data)).toEqual([4, 5, 6, 7, 8, 9]);
 });
 
-test("returns empty rows for an empty range, keeping the row length", async () => {
+test("returns empty rows and the row length for an empty range", async () => {
   const { data, rowLength } = await readRows(store, "/waveforms", {
     start: 2,
     end: 2,

@@ -1,80 +1,92 @@
-// Default import: fili is CommonJS, and native Node ESM guarantees only the default
-// export for CJS modules.
+// fili is CommonJS; native Node ESM guarantees only the default export for CJS modules.
 import fili from "fili";
 import type { FilterSpec, Segment } from "./types.js";
 import { FILTER_GAP_RESET_SAMPLES } from "./constants.js";
 
 const { CalcCascades, IirFilter } = fili;
 
-/**
- * The single characteristic the reader currently offers.
- * Required by the cascade builder.
- */
-const CHARACTERISTIC = "butterworth";
-
-/**
- * The maximum number of stages the cascade builder honours
- * Beyond this it silently clamps.
- */
+/** Maximum filter order the cascade builder accepts. Above this it silently clamps. */
 const MAX_ORDER = 12;
 
 /**
- * A configured, stateful Butterworth filter.
+ * A stateful Butterworth filter.
  *
- * The recursive filter carries state from one `process` call to the next.
- * Building a filter yields an object to keep rather than a function to call
- * in order to maintain this state between chunks.
- *
- * A signal delivered in chunks should filter identically to the same signal
- * delivered whole.
+ * `process` carries IIR state across calls: a signal delivered in chunks
+ * filters identically to the same signal delivered whole.
  */
-export type Filter = {
-  /**
-   * Filter one chunk of samples, in order, returning a new array.
-   * The input is left untouched.
-   */
+export interface Filter {
+  /** Filters one chunk of samples in order and returns a new array. The input is not modified. */
   process(samples: Float64Array): Float64Array;
   /**
-   * Discard the state carried from earlier chunks. Allows the next `process`
-   * call to start as if nothing had been filtered.
-   * Use across a break in the signal, where the previous samples are no longer
-   * the immediate past.
+   * Discards state carried from earlier chunks; the next `process` call starts
+   * fresh. Use across a break in the signal.
    */
   reset(): void;
-};
+}
+
+/** Throws a RangeError unless `freqHz` is strictly between 0 and `nyquistHz`. */
+function requireInNyquistRange(
+  freqHz: number,
+  nyquistHz: number,
+  label: string,
+): void {
+  if (!(freqHz > 0 && freqHz < nyquistHz)) {
+    throw new RangeError(
+      `${label} must be above 0 and below the Nyquist frequency of ${nyquistHz} Hz (got ${freqHz})`,
+    );
+  }
+}
+
+/** Validates the spec's frequencies against `rateHz` and builds the cascade coefficients. */
+function designCoefficients(spec: FilterSpec, rateHz: number) {
+  const nyquistHz = rateHz / 2;
+  const cascades = new CalcCascades();
+  const shared = {
+    order: spec.order,
+    characteristic: "butterworth",
+    Fs: rateHz,
+  } as const;
+
+  if (spec.type === "lowpass" || spec.type === "highpass") {
+    requireInNyquistRange(spec.cutoffHz, nyquistHz, "cutoffHz");
+    const params = { ...shared, Fc: spec.cutoffHz };
+    return spec.type === "lowpass"
+      ? cascades.lowpass(params)
+      : cascades.highpass(params);
+  }
+
+  requireInNyquistRange(spec.lowHz, nyquistHz, "lowHz");
+  requireInNyquistRange(spec.highHz, nyquistHz, "highHz");
+  if (spec.lowHz >= spec.highHz) {
+    throw new RangeError(
+      `lowHz must be below highHz (got ${spec.lowHz} and ${spec.highHz})`,
+    );
+  }
+  // The builder takes a center frequency and a width in octaves, not the two edges.
+  const params = {
+    ...shared,
+    Fc: Math.sqrt(spec.lowHz * spec.highHz),
+    BW: Math.log2(spec.highHz / spec.lowHz),
+  };
+  return spec.type === "bandpass"
+    ? cascades.bandpass(params)
+    : cascades.bandstop(params);
+}
 
 /**
- * Build a Butterworth filter for one channel from a filter request.
+ * Builds a Butterworth filter for one channel.
  *
- * Butterworth is the only characteristic offered, so `spec` does not name one.
- * `rateHz` is the channel's native sampling rate, which fixes the meaning of
- * every frequency in the spec.
+ * `rateHz` is the channel's native sampling rate; it fixes the meaning of every
+ * frequency in `spec`. Samples stay in physical units: no unit conversion, no
+ * gain. For bandpass and bandstop, `lowHz` and `highHz` are the band edges,
+ * converted to the center frequency and octave width the cascade builder
+ * takes. Attenuation at the nominal edges deepens with `order`.
  *
- * Samples stay in physical units: no unit conversion, no gain.
- *
- * The result is stateful and belongs to exactly one channel's stream to allow
- * for seamless joins across the stream's chunks.
- *
- * Only raw samples can be filtered. A pyramid level stores min/max extremes
- * per bin rather than a signal. No filter of extremes can accurately calculate
- * a raw, filtered signal's extremes.
- *
- * For bandpass and bandstop, `lowHz` and `highHz` name the band's edges and are converted
- * to the centre frequency and width the filter is built from.
- *
- * The cascade sharpens with order: every stage attenuates at the edges. The
- * nominal edges sit further down the skirt at higher orders rather than
- * remaining at a fixed level.
- *
- * Choose `order` for the desired skirt rather than on the assumption that
- * the edges keep a constant attenuation.
- *
- * Throws a RangeError for a spec the filter cannot honour: an `order` that is
- * not a whole number within the supported range, a frequency that is not above
- * zero and below the Nyquist frequency (half `rateHz`), or a band whose `lowHz`
- * is not below its `highHz`.
+ * Throws a RangeError for an `order` that is not an integer from 1 to 12, a
+ * frequency not strictly between 0 and half `rateHz`, or a `lowHz` at or above
+ * its `highHz`.
  */
-export function makeFilter(spec: FilterSpec, rateHz: number): Filter {
+export function createFilter(spec: FilterSpec, rateHz: number): Filter {
   if (
     !Number.isInteger(spec.order) ||
     spec.order < 1 ||
@@ -85,51 +97,7 @@ export function makeFilter(spec: FilterSpec, rateHz: number): Filter {
     );
   }
 
-  const nyquistHz = rateHz / 2;
-  const requireBelowNyquist = (freqHz: number, label: string): void => {
-    if (!(freqHz > 0 && freqHz < nyquistHz)) {
-      throw new RangeError(
-        `${label} must be above 0 and below the Nyquist frequency of ${nyquistHz} Hz (got ${freqHz})`,
-      );
-    }
-  };
-
-  const cascades = new CalcCascades();
-  const shared = {
-    order: spec.order,
-    characteristic: CHARACTERISTIC,
-    Fs: rateHz,
-  } as const;
-
-  let coeffs;
-  if (spec.type === "lowpass" || spec.type === "highpass") {
-    requireBelowNyquist(spec.cutoffHz, "cutoffHz");
-    const params = { ...shared, Fc: spec.cutoffHz };
-    coeffs =
-      spec.type === "lowpass"
-        ? cascades.lowpass(params)
-        : cascades.highpass(params);
-  } else {
-    requireBelowNyquist(spec.lowHz, "lowHz");
-    requireBelowNyquist(spec.highHz, "highHz");
-    if (spec.lowHz >= spec.highHz) {
-      throw new RangeError(
-        `lowHz must be below highHz (got ${spec.lowHz} and ${spec.highHz})`,
-      );
-    }
-    // The builder takes a centre frequency and a width in octaves, not the two edges.
-    const params = {
-      ...shared,
-      Fc: Math.sqrt(spec.lowHz * spec.highHz),
-      BW: Math.log2(spec.highHz / spec.lowHz),
-    };
-    coeffs =
-      spec.type === "bandpass"
-        ? cascades.bandpass(params)
-        : cascades.bandstop(params);
-  }
-
-  const filter = new IirFilter(coeffs);
+  const filter = new IirFilter(designCoefficients(spec, rateHz));
   return {
     process: (samples) => Float64Array.from(filter.multiStep(samples)),
     reset: () => filter.reinit(),
@@ -137,43 +105,41 @@ export function makeFilter(spec: FilterSpec, rateHz: number): Filter {
 }
 
 /**
- * Holds the filter state for a session, one filter per (channel, spec, rate).
+ * Filters raw segments, holding filter state per (channel, spec, rate).
  *
- * A recursive filter's output depends on the samples before it.
- * A stream arriving in chunks must maintain state between chunks.
- *
- * Sessions are independent. Two sessions filtering the same channel do not share state.
+ * Sessions are independent: two sessions filtering the same channel do not
+ * share state.
  */
-export type FilterSession = {
+export interface FilterSession {
   /**
-   * Filters one raw segment.
-   * Returns the filter with its samples replaced.
+   * Filters one raw segment. Returns a new segment with the filtered data;
+   * the input is not modified.
    *
-   * State carries from the previous segment of the same session when this segment
-   * is within `FILTER_GAP_RESET_SAMPLES` `samplePeriodUs` steps
-   * from where the previous segment ended.
+   * State carries over from the previous segment of the same (channel, spec,
+   * rate) when this segment starts within `FILTER_GAP_RESET_SAMPLES` sample
+   * periods of where that segment ended. An initial segment, a wider gap, or
+   * a jump backwards filters from a cleared state.
    *
-   * An initial chunk, one with a wider gap, or a jump backwards,
-   * all filter from a cleared state.
-   *
-   * An empty segment returns empty and leaves the state as it was.
+   * An empty segment returns empty and leaves the state unchanged.
    * Throws a RangeError for a min/max segment.
    */
   apply(segment: Segment, spec: FilterSpec, rateHz: number): Segment;
-  /** Drop all held state. */
+  /** Drops all held state. */
   clear(): void;
-};
+}
 
-/** Canonical key for a spec, independent of the order its properties were written in. */
-const specKey = (spec: FilterSpec): string =>
-  spec.type === "lowpass" || spec.type === "highpass"
+/** Canonical key for a spec; equal specs produce equal keys. */
+function specKey(spec: FilterSpec): string {
+  return spec.type === "lowpass" || spec.type === "highpass"
     ? `${spec.type}:${spec.order}:${spec.cutoffHz}`
     : `${spec.type}:${spec.order}:${spec.lowHz}:${spec.highHz}`;
+}
 
 /**
- * Create a filter session.
+ * Creates a filter session.
  *
- * One filter accumulates per (channel, spec, rate) applied; `clear` releases them all.
+ * One filter accumulates per (channel, spec, rate) applied; `clear` releases
+ * them all.
  */
 export function createFilterSession(): FilterSession {
   const entries = new Map<string, { filter: Filter; nextStartUs: number }>();
@@ -189,14 +155,14 @@ export function createFilterSession(): FilterSession {
         return { ...segment };
       }
 
-      // Channel last: the spec and rate parts have a fixed shape, so a channel key
-      // containing the separator cannot be read as another entry's key.
+      // The spec and rate parts contain no "|"; a channel id containing the
+      // separator cannot collide with another key.
       const key = `${specKey(spec)}|${rateHz}|${segment.channel}`;
       let entry = entries.get(key);
 
       if (entry === undefined) {
-        // A filter starts cleared, so a first sighting needs no continuity check.
-        entry = { filter: makeFilter(spec, rateHz), nextStartUs: 0 };
+        // A new filter starts cleared; no continuity check needed.
+        entry = { filter: createFilter(spec, rateHz), nextStartUs: 0 };
         entries.set(key, entry);
       } else {
         const driftUs = segment.startUs - entry.nextStartUs;

@@ -17,7 +17,7 @@ test("encodes string values as UTF-8", async () => {
   expect(bytes?.length).toBe(10);
 });
 
-test("resolves undefined for an absent key rather than throwing", async () => {
+test("resolves undefined for an absent key", async () => {
   const store = createMemoryStore({});
   await expect(store.get("/missing")).resolves.toBeUndefined();
 });
@@ -28,7 +28,7 @@ test("keeps an empty file distinct from an absent one", async () => {
   expect(await store.get("/absent")).toBeUndefined();
 });
 
-test("serves a byte window from a key", async () => {
+test("serves an offset range", async () => {
   const store = createMemoryStore({
     "/a.bin": new Uint8Array([1, 2, 3, 4, 5]),
   });
@@ -36,7 +36,7 @@ test("serves a byte window from a key", async () => {
   expect(Array.from(bytes ?? [])).toEqual([2, 3, 4]);
 });
 
-test("serves a suffix, which is how a shard index is read", async () => {
+test("serves a suffix range", async () => {
   const store = createMemoryStore({
     "/a.bin": new Uint8Array([1, 2, 3, 4, 5]),
   });
@@ -51,7 +51,7 @@ test("resolves undefined for a range of an absent key", async () => {
   ).resolves.toBeUndefined();
 });
 
-test("rejects reads carrying an already-aborted signal", async () => {
+test("rejects reads with an already-aborted signal", async () => {
   const store = createMemoryStore({ "/a.bin": new Uint8Array([1]) });
   const signal = AbortSignal.abort();
   await expect(store.get("/a.bin", { signal })).rejects.toThrow(/abort/i);
@@ -60,12 +60,14 @@ test("rejects reads carrying an already-aborted signal", async () => {
   ).rejects.toThrow(/abort/i);
 });
 
-test("resolves a copy, so mutating a read cannot corrupt the fixture", async () => {
+test("returns a defensive copy of the stored bytes", async () => {
   const store = createMemoryStore({ "/a.bin": new Uint8Array([1, 2, 3]) });
 
   const first = await store.get("/a.bin");
-  expect(first).toBeDefined();
-  if (first) first[0] = 99;
+  if (first === undefined) {
+    throw new Error("expected stored bytes");
+  }
+  first[0] = 99;
 
   expect(Array.from((await store.get("/a.bin")) ?? [])).toEqual([1, 2, 3]);
 });

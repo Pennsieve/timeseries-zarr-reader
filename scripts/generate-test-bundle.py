@@ -1,9 +1,9 @@
 """Generate test-data/sample.zarr, the committed acceptance-test bundle.
 
-Runs the real writer from a ts-zarr-py checkout, so the fixture carries everything
-production bundles do: ZEP2 sharding, Zstd compression, crc32c shard indices, and
-consolidated metadata. The content is deterministic, and the acceptance tests in
-src/index.test.ts and src/stores/parity.test.ts state exact expectations against it:
+Runs the real writer from a ts-zarr-py checkout. The fixture has the full production
+layout: ZEP2 sharding, Zstd compression, crc32c shard indices, and consolidated
+metadata. The content is deterministic; the acceptance tests in src/index.test.ts and
+src/stores/parity.test.ts state exact expectations against it:
 
 - "sineA":  50 * sin(2 pi * 5 Hz * t)  at 1 kHz, 30_000 samples
 - "sineB":  30 * sin(2 pi * 8 Hz * t)  at 1 kHz, same grid (montage-able with sineA)
@@ -11,9 +11,9 @@ src/index.test.ts and src/stores/parity.test.ts state exact expectations against
 - "unitA":  200 events at start + (i + 1) * 137_000 us; 32-point ramp waveforms
             (row i is i, i+1, ..., i+31) sampled at 30 kHz
 
-min_bins is lowered to 256 so a 30 k-sample channel still grows four pyramid levels
+min_bins is lowered to 256 so a 30 k-sample channel produces four pyramid levels
 (periods 1, 4, 16, 64 ms), and inner_len to 8192 so a level spans several inner
-chunks within one shard. Regenerating requires numpy determinism for "noise";
+chunks within one shard. The "noise" channel depends on numpy's seeded RNG;
 everything else is exact arithmetic.
 
 Usage: <ts-zarr-py venv python> scripts/generate-test-bundle.py

@@ -1,63 +1,69 @@
 /**
- * Types for `fili`, which ships none and has no community typings package.
+ * Types for `fili`, which ships none. Declares only the surface the reader
+ * uses. Parameter names come from fili.js.
  *
- * Declares only the surface the reader uses.
+ * Bandpass and bandstop take a center frequency and a width in octaves, not
+ * two edge frequencies; edges passed under other names silently yield null
+ * coefficients and NaN output.
  *
- * Parameter names come from fili.js directly. Note: a bandpass or bandstop
- * is specified by centre frequency and width, not by the two edges, and the
- * width is in octaves. Passing edge frequencies under other names silently yields
- * null coefficients and a filter that returns NaN.
- *
- * The package is CommonJS (a UMD bundle), so the module is declared with `export =`,
- * its accurate shape: one exported object, consumed via a default import. Named ESM
- * imports parse under a bundler but fail on native Node, whose CJS interop guarantees
- * only the default export.
+ * The package is CommonJS, declared with `export =` and consumed via a default
+ * import; named ESM imports fail on native Node.
  */
 declare module "fili" {
   /**
-   * A biquad's coefficients plus its delay registers. Produced by
-   * the cascade builders and consumed by the filter, opaque in between.
+   * A biquad's coefficients plus its delay registers. Produced by the cascade
+   * builders and consumed by the filter, opaque in between.
    */
-  type BiquadCoeffs = {
+  interface BiquadCoeffs {
     a: number[];
     b: number[];
     k: number;
     z: number[];
     a0: number;
-  };
+  }
 
-  /** How to build one cascade. Frequencies are in hertz, matching `Fs`. */
-  type CascadeParams = {
-    /** Number of stages; the builder clamps above 12 rather than refusing. */
+  /**
+   * Parameters for the lowpass and highpass builders. Frequencies are in
+   * hertz, matching `Fs`.
+   */
+  interface EdgeCascadeParams {
+    /** Number of stages; the builder silently clamps above 12. */
     order: number;
     characteristic: "butterworth";
     /** Sampling rate. */
     Fs: number;
-    /** Cutoff for lowpass and highpass; band centre for bandpass and bandstop. */
+    /** Cutoff frequency. */
     Fc: number;
-    /** Band width in octaves. Band filters only, where it is required despite the type. */
-    BW?: number;
-  };
-
-  /** Builds the per-stage coefficients for a cascaded IIR filter. */
-  interface CalcCascades {
-    lowpass(params: CascadeParams): BiquadCoeffs[];
-    highpass(params: CascadeParams): BiquadCoeffs[];
-    bandpass(params: CascadeParams): BiquadCoeffs[];
-    bandstop(params: CascadeParams): BiquadCoeffs[];
   }
 
   /**
-   * A cascaded IIR filter. Each instance owns its delay registers,
-   * so instances built from the same coefficients stay independent.
+   * Parameters for the bandpass and bandstop builders. `Fc` is the band center
+   * frequency.
+   */
+  interface BandCascadeParams extends EdgeCascadeParams {
+    /** Band width in octaves. */
+    BW: number;
+  }
+
+  /** Builds the per-stage coefficients for a cascaded IIR filter. */
+  interface CalcCascades {
+    lowpass(params: EdgeCascadeParams): BiquadCoeffs[];
+    highpass(params: EdgeCascadeParams): BiquadCoeffs[];
+    bandpass(params: BandCascadeParams): BiquadCoeffs[];
+    bandstop(params: BandCascadeParams): BiquadCoeffs[];
+  }
+
+  /**
+   * A cascaded IIR filter. Each instance owns its delay registers; instances
+   * built from the same coefficients are independent.
    */
   interface IirFilter {
     /**
-     * Filter a run of samples in order, returning a plain array, including
-     * when handed a typed array. Use `overwrite` to filter in place instead.
+     * Filters a run of samples in order. Returns a plain array, even for
+     * typed-array input; `overwrite` filters in place instead.
      */
     multiStep(input: ArrayLike<number>, overwrite?: boolean): number[];
-    /** Zero the delay registers. */
+    /** Zeroes the delay registers. */
     reinit(): void;
   }
 

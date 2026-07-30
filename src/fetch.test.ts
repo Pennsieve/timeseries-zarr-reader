@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { createFetchLimit } from "./fetch.js";
 
-/** A promise plus the handles to settle it, for driving task completion by hand. */
+/** A promise with its resolve function exposed. */
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => {
@@ -10,7 +10,7 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-/** Let every already-scheduled microtask and timer callback run. */
+/** Resolves after already-scheduled microtasks and timer callbacks have run. */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 test("resolves a task's value", async () => {
@@ -49,7 +49,7 @@ test("runs no more tasks at once than the cap, starting them in order", async ()
   expect(peak).toBe(2);
 });
 
-test("keeps a failed task from stalling the ones behind it", async () => {
+test("a rejected task does not block queued tasks", async () => {
   const limit = createFetchLimit(1);
 
   const failed = limit(() => Promise.reject(new Error("read failed")));
@@ -68,7 +68,7 @@ test("turns a task's synchronous throw into a rejection", async () => {
   ).rejects.toThrow(/boom/);
 });
 
-test("rejects a concurrency that is not a whole number of at least one", () => {
+test("throws for a concurrency that is not a positive integer", () => {
   expect(() => createFetchLimit(0)).toThrow(TypeError);
   expect(() => createFetchLimit(-1)).toThrow(TypeError);
   expect(() => createFetchLimit(1.5)).toThrow(TypeError);

@@ -30,8 +30,10 @@ test("opens a file:// URL with the filesystem store, decoding the path", async (
   const spaced = await mkdtemp(join(tmpdir(), "reader with space-"));
   try {
     const store = await openBundle(pathToFileURL(spaced).href);
-    expect(store).toBeInstanceOf(FileStore);
-    expect((store as FileStore).root).toBe(spaced);
+    if (!(store instanceof FileStore)) {
+      throw new Error("expected a FileStore");
+    }
+    expect(store.root).toBe(spaced);
   } finally {
     await rm(spaced, { recursive: true, force: true });
   }
@@ -56,10 +58,10 @@ test("re-exports zarrita's FetchStore unchanged", () => {
   expect(ReExportedFetchStore).toBe(FetchStore);
 });
 
-test("refuses a scheme it has no store for", async () => {
+test("rejects an unsupported URL scheme", async () => {
   await expect(openBundle("s3://bucket/sample.zarr")).rejects.toThrow(/s3:/);
 });
 
-test("refuses a relative path rather than guessing a working directory", async () => {
+test("rejects a relative path", async () => {
   await expect(openBundle("sample.zarr")).rejects.toThrow(/absolute/);
 });

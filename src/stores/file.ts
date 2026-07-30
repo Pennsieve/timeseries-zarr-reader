@@ -3,37 +3,37 @@ import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { ByteRange, Store, StoreOptions } from "../types.js";
 
-/** True for the filesystem's "no such file" - the one failure that means an absent key. */
-const isMissing = (error: unknown): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "code" in error &&
-  error.code === "ENOENT";
+/** Returns whether an error is the filesystem's ENOENT, the one failure that means an absent key. */
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
 
 /**
  * A `Store` over a bundle directory on disk.
  *
- * Node-only: it reads through `node:fs`, so it must never be reachable from a browser entry
- * point. Its purpose is local work - CI fixtures, offline development, inspecting a bundle
- * without a server.
+ * Node-only (`node:fs`); must not be reachable from a browser entry point. Intended for CI
+ * fixtures, offline development, and local inspection.
  *
- * Keys are absolute and resolve beneath `root`, so `/0/1/zarr.json` is that path under the
- * bundle directory. A key that would escape `root` is rejected rather than followed.
+ * Keys resolve beneath `root`; a key that resolves outside `root` throws. A ranged read seeks
+ * and reads only the requested bytes. Nothing is cached or held open between reads.
  *
- * A ranged read seeks: it opens the file and reads only the requested bytes, which is what makes
- * a 16 MB shard cheap to sample. Nothing is cached and nothing is held open between reads.
- *
- * A missing file resolves to `undefined` from either read, per the `Store` contract; an empty
- * file resolves to zero bytes, which is a different answer. Any other filesystem failure - a
- * permission error, a directory where a file was expected - propagates.
+ * A missing file resolves to `undefined`; an empty file resolves to zero bytes. Any other
+ * filesystem failure propagates.
  */
 export class FileStore implements Store {
+  /** The bundle directory as given, unresolved. */
   readonly root: string;
 
-  // Written out rather than declared as a constructor parameter property: that syntax is not
-  // erasable, so it breaks tools that strip types without transforming them.
+  readonly #base: string;
+
   constructor(root: string) {
     this.root = root;
+    this.#base = resolve(root);
   }
 
   async get(
@@ -71,7 +71,7 @@ export class FileStore implements Store {
       const buffer = new Uint8Array(length);
       const { bytesRead } = await handle.read(buffer, 0, length, position);
       opts?.signal?.throwIfAborted();
-      // A range reaching past the end returns what was there, not zero padding.
+      // A range past the end of the file returns the bytes present, not zero padding.
       return buffer.subarray(0, bytesRead);
     } catch (error) {
       if (isMissing(error)) {
@@ -83,11 +83,10 @@ export class FileStore implements Store {
     }
   }
 
-  /** Absolute path for a key, refusing anything that normalises out of the bundle. */
+  /** Resolves a key to an absolute path. Throws when the key resolves outside the bundle root. */
   #pathFor(key: `/${string}`): string {
-    const base = resolve(this.root);
-    const path = resolve(base, `.${key}`);
-    const within = relative(base, path);
+    const path = resolve(this.#base, `.${key}`);
+    const within = relative(this.#base, path);
     if (within.startsWith("..") || isAbsolute(within)) {
       throw new Error(`key ${key} resolves outside the bundle root`);
     }

@@ -1,7 +1,7 @@
 import tseslint from "typescript-eslint";
 import prettier from "eslint-config-prettier";
 
-/** viewer/framework imports that would break the reader's framework agnosticism. */
+/** Viewer and framework packages, banned in every file. */
 const agnosticGuard = {
   group: [
     "vue",
@@ -15,10 +15,10 @@ const agnosticGuard = {
     "@pennsieve-viz/*",
   ],
   message:
-    "The reader is framework agnostic and disables viewer/framework imports.",
+    "Do not import viewer or framework packages; the library is framework-agnostic.",
 };
 
-/** zarrita may be imported only in src/zarr.ts and src/stores/**. Every other module should remain zarrita agnostic. */
+/** zarrita, banned outside src/zarr.ts and src/stores/**. */
 const zarritaGuard = {
   group: ["zarrita", "zarrita/*"],
   message:
@@ -26,11 +26,30 @@ const zarritaGuard = {
 };
 
 /**
- * Node builtins belong to src/stores/** alone. @types/node makes Node globals visible
- * everywhere, so this rule is what keeps the rest of the reader runnable in a browser.
+ * Node builtins, banned outside src/stores/**. The node:* pattern matches only prefixed
+ * imports; bare specifiers must be listed by name, and this list covers the commonly
+ * used builtins.
  */
 const nodeGuard = {
-  group: ["node:*", "fs", "fs/*", "path", "os", "url", "buffer", "stream"],
+  group: [
+    "node:*",
+    "fs",
+    "fs/*",
+    "path",
+    "os",
+    "url",
+    "buffer",
+    "stream",
+    "http",
+    "https",
+    "net",
+    "crypto",
+    "events",
+    "util",
+    "zlib",
+    "child_process",
+    "worker_threads",
+  ],
   message:
     "Import Node builtins only in src/stores/**. The rest of the reader must run in a browser.",
 };
@@ -48,7 +67,7 @@ export default tseslint.config(
     },
   },
   {
-    // zarrita is allowed here, Node builtins are not.
+    // zarrita is allowed here; Node builtins are not.
     files: ["src/zarr.ts"],
     rules: {
       "no-restricted-imports": [
@@ -58,15 +77,15 @@ export default tseslint.config(
     },
   },
   {
-    // The only place that may reach the filesystem.
+    // zarrita and Node builtins are both allowed here.
     files: ["src/stores/**/*.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [agnosticGuard] }],
     },
   },
   {
-    // Tests run under vitest on Node and may use Node builtins for fixtures; the zarrita
-    // ban stays, keeping every module testable against an in-memory Store.
+    // Tests run on Node and may use Node builtins for fixtures. The zarrita ban still
+    // applies.
     files: ["src/*.test.ts"],
     rules: {
       "no-restricted-imports": [

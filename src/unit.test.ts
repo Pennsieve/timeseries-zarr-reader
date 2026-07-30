@@ -8,7 +8,7 @@ import {
   shouldFetchWaveforms,
 } from "./unit.js";
 
-/** A reader over an in-memory list, for driving the search without a store. */
+/** A timestamp reader over an in-memory array. */
 const readerOf = (times: number[]): TimestampReader => ({
   count: times.length,
   read: (start, end) =>
@@ -35,8 +35,8 @@ test("returns 0 for an empty timestamp array", async () => {
   expect(await firstIndexAtOrAfter(readerOf([]), 5000)).toBe(0);
 });
 
-test("returns the FIRST of duplicate timestamps, not whichever probe hits", async () => {
-  // Simultaneous events share a microsecond; landing mid-run would drop the earlier ones.
+test("returns the first index of a run of duplicate timestamps", async () => {
+  // Simultaneous events share a timestamp; a mid-run index would drop the earlier ones.
   const reader = readerOf([1000, 5000, 5000, 5000, 9000]);
   expect(await firstIndexAtOrAfter(reader, 5000)).toBe(1);
   expect(await firstIndexAtOrAfter(readerOf([5000, 5000, 5000]), 5000)).toBe(0);
@@ -95,7 +95,7 @@ test("includes an event exactly at the window start", async () => {
   expect(Array.from(event.times)).toEqual([1_005_000, 1_005_500]);
 });
 
-test("fetches the matching waveform rows when zoomed in far enough", async () => {
+test("fetches the matching waveform rows when the waveform spans enough pixels", async () => {
   // One waveform is 3 x 100 us = 300 us; a 20 us pixel puts it across 15 pixels.
   const event = await queryUnitChannel(store, "u", UNIT, {
     startUs: 1_003_000,
@@ -107,7 +107,7 @@ test("fetches the matching waveform rows when zoomed in far enough", async () =>
   expect(Array.from(event.data)).toEqual([4, 5, 6, 7, 8, 9]);
 });
 
-test("reports an empty window as no events and no waveforms", async () => {
+test("returns no events and no waveforms for an empty window", async () => {
   const event = await queryUnitChannel(store, "u", UNIT, {
     startUs: 2_000_000,
     endUs: 2_100_000,

@@ -1,4 +1,4 @@
-import { test, expect, expectTypeOf } from "vitest";
+import { expect, expectTypeOf, test } from "vitest";
 import type {
   ByteRange,
   ChannelInfo,
@@ -20,7 +20,6 @@ test("Segment has the documented shape", () => {
   };
   expectTypeOf(seg.data).toEqualTypeOf<Float64Array>();
   expectTypeOf<Segment["isMinMax"]>().toBeBoolean();
-  expect(seg.data.length).toBe(3);
 });
 
 test("ChannelInfo has the documented shape", () => {
@@ -35,16 +34,13 @@ test("ChannelInfo has the documented shape", () => {
   };
   expectTypeOf(info.rateHz).toBeNumber();
   expectTypeOf<ChannelInfo["kind"]>().toEqualTypeOf<"continuous" | "unit">();
-  expect(info.kind).toBe("continuous");
 });
 
 test("MontagePair has the documented shape", () => {
-  const pair: MontagePair = { lead: "ch1", secondary: "ch2" };
   expectTypeOf<MontagePair>().toEqualTypeOf<{
-    lead: string;
-    secondary: string;
+    readonly lead: string;
+    readonly secondary: string;
   }>();
-  expect(pair).toEqual({ lead: "ch1", secondary: "ch2" });
 });
 
 test("FilterSpec discriminates cutoff fields by type", () => {
@@ -55,12 +51,12 @@ test("FilterSpec discriminates cutoff fields by type", () => {
     lowHz: 1,
     highHz: 40,
   };
-  expect(lowpass.type).toBe("lowpass");
-  expect(bandpass.type).toBe("bandpass");
-  // The discriminant narrows to the band-specific cutoff fields.
+  if (lowpass.type === "lowpass") {
+    expectTypeOf(lowpass.cutoffHz).toBeNumber();
+  }
   if (bandpass.type === "bandpass") {
-    expect(bandpass.lowHz).toBe(1);
-    expect(bandpass.highHz).toBe(40);
+    expectTypeOf(bandpass.lowHz).toBeNumber();
+    expectTypeOf(bandpass.highHz).toBeNumber();
   }
   expectTypeOf<FilterSpec["type"]>().toEqualTypeOf<
     "lowpass" | "highpass" | "bandpass" | "bandstop"
@@ -80,8 +76,6 @@ test("Event has the documented shape", () => {
   };
   expectTypeOf(ev.times).toEqualTypeOf<Float64Array>();
   expectTypeOf(ev.data).toEqualTypeOf<Float64Array>();
-  expect(ev.channel).toBe("unit-3");
-  expect(ev.pointsPerEvent).toBe(0);
 });
 
 test("Store reads whole keys and ranges, returning bytes or undefined", async () => {
@@ -110,10 +104,9 @@ test("Store reads whole keys and ranges, returning bytes or undefined", async ()
   ).resolves.toBeUndefined();
 });
 
-test("Store offers the whole-key and ranged reads a sharded bundle needs", () => {
-  // Mirrors zarrita 0.7's AsyncReadable, whose getRange is optional; the reader requires it
-  // because every bundle array is sharded. Real conformance is enforced where zarr.ts hands a
-  // Store to zarrita - that call site fails to compile if these drift apart.
+test("Store declares the whole-key and ranged read surface", () => {
+  // Mirrors zarrita's AsyncReadable with getRange required. The zarr.ts call
+  // site that hands a Store to zarrita fails to compile if the two drift.
   expectTypeOf<Store>().toEqualTypeOf<{
     get(
       key: `/${string}`,

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { ChannelInfo } from "./types.js";
-import { compoundKey, subtract } from "./montage.js";
+import { montageChannelKey, subtract } from "./montage.js";
 
 const channel = (
   id: string,
@@ -15,7 +15,7 @@ test("subtracts the secondary channel from the lead sample by sample", () => {
   expect(Array.from(out)).toEqual([9, 18, 27]);
 });
 
-test("reports a difference below zero as measured, without flipping the sign", () => {
+test("preserves negative differences", () => {
   const out = subtract(new Float64Array([1, 2]), new Float64Array([5, 10]));
   expect(Array.from(out)).toEqual([-4, -8]);
 });
@@ -53,32 +53,32 @@ test("leaves both inputs untouched and returns a distinct array", () => {
 });
 
 test("builds a key from the lead id, the lead name, and the secondary name", () => {
-  expect(compoundKey(channel("ch1", "LFP1"), channel("ch2", "LFP2"))).toBe(
-    "ch1_LFP1<->LFP2",
-  );
+  expect(
+    montageChannelKey(channel("ch1", "LFP1"), channel("ch2", "LFP2")),
+  ).toBe("ch1_LFP1<->LFP2");
 });
 
 test("ignores the secondary channel's id", () => {
   const lead = channel("ch1", "LFP1");
-  expect(compoundKey(lead, channel("ch2", "LFP2"))).toBe(
-    compoundKey(lead, channel("ch9", "LFP2")),
+  expect(montageChannelKey(lead, channel("ch2", "LFP2"))).toBe(
+    montageChannelKey(lead, channel("ch9", "LFP2")),
   );
 });
 
 test("yields a different key when lead and secondary are swapped", () => {
-  expect(compoundKey(channel("ch2", "LFP2"), channel("ch1", "LFP1"))).toBe(
-    "ch2_LFP2<->LFP1",
-  );
+  expect(
+    montageChannelKey(channel("ch2", "LFP2"), channel("ch1", "LFP1")),
+  ).toBe("ch2_LFP2<->LFP1");
 });
 
 test("copies names verbatim, including spaces and punctuation", () => {
   expect(
-    compoundKey(channel("chan-7", "Fp1-Ref"), channel("x", "A1 (ref)")),
+    montageChannelKey(channel("chan-7", "Fp1-Ref"), channel("x", "A1 (ref)")),
   ).toBe("chan-7_Fp1-Ref<->A1 (ref)");
 });
 
-test("still yields the delimiters when a name is empty", () => {
-  expect(compoundKey(channel("ch1", "LFP1"), channel("ch2", ""))).toBe(
+test("keeps the delimiters when a name is empty", () => {
+  expect(montageChannelKey(channel("ch1", "LFP1"), channel("ch2", ""))).toBe(
     "ch1_LFP1<->",
   );
 });

@@ -18,7 +18,7 @@ test("reduces raw samples to one min/max pair per pixel", () => {
 });
 
 test("groups bins by time when the bins-per-pixel ratio is not an integer", () => {
-  // 2.5 bins per pixel: bins 0-2 land in pixel 0, bins 3-4 in pixel 1.
+  // 2.5 bins per pixel: bins 0-2 fall in pixel 0, bins 3-4 in pixel 1.
   const out = resampleToPixels(raw([3, 1, 4, 1, 5]), 2500);
   expect(Array.from(out.data)).toEqual([1, 4, 1, 5]);
   expect(out.samplePeriodUs).toBe(2500);
@@ -57,7 +57,7 @@ test("skips non-finite envelope pairs when merging", () => {
   expect(Array.from(out.data)).toEqual([5, 15]);
 });
 
-test("yields NaN for a pixel holding nothing but non-finite values", () => {
+test("yields NaN for a pixel containing only non-finite values", () => {
   const out = resampleToPixels(raw([NaN, NaN, 2, 6]), 2000);
   expect(Array.from(out.data)).toEqual([NaN, NaN, 2, 6]);
 });

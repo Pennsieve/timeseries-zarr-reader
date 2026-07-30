@@ -1,16 +1,20 @@
 import type { Segment, Store } from "./types.js";
 
+/** Collects an async iterable into an array. */
+export async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of iterable) {
+    items.push(item);
+  }
+  return items;
+}
+
 /**
- * A `Store` backed by an object literal, for tests that need bundle bytes without a
- * filesystem or a network.
+ * Creates a `Store` backed by an object literal.
  *
- * String values are encoded as UTF-8, bundle metadata being JSON. Reads return a copy, so a
- * test that mutates what it read cannot corrupt the fixture. The stored arrays themselves are
- * held as given, not copied on the way in.
- *
- * An absent key resolves to `undefined` rather than throwing, matching the `Store` contract,
- * and an empty file stays distinct from an absent one. An already-aborted signal rejects the
- * read.
+ * String values are encoded as UTF-8. Reads return a copy; the stored arrays are not copied
+ * on construction. An absent key resolves to `undefined`; an empty file is distinct from an
+ * absent one. An already-aborted signal rejects the read.
  */
 export function createMemoryStore(
   files: Record<`/${string}`, string | Uint8Array>,
@@ -40,10 +44,9 @@ export function createMemoryStore(
 }
 
 /**
- * Metadata for one unsharded, uncompressed little-endian array.
+ * Builds `zarr.json` metadata for one unsharded, uncompressed little-endian array.
  *
- * Deliberately plainer than a real bundle, whose arrays are sharded and Zstd-compressed: chunk
- * bytes for this layout can be written by hand, so a test needs no encoder and no Zarr writer.
+ * Chunk bytes for this layout can be written by hand, with no encoder or Zarr writer.
  */
 export function arrayMetadata(
   shape: number[],
@@ -64,7 +67,7 @@ export function arrayMetadata(
   });
 }
 
-/** One chunk's worth of float32 bytes, written little-endian whatever the host's byte order. */
+/** Encodes values as one chunk of little-endian float32 bytes. */
 export function float32Chunk(values: number[]): Uint8Array {
   const bytes = new Uint8Array(values.length * 4);
   const view = new DataView(bytes.buffer);
@@ -74,7 +77,7 @@ export function float32Chunk(values: number[]): Uint8Array {
   return bytes;
 }
 
-/** One chunk's worth of int64 bytes, little-endian. Accepts bigint for out-of-range values. */
+/** Encodes values as one chunk of little-endian int64 bytes. Accepts bigint for values beyond Number's safe range. */
 export function int64Chunk(values: Array<number | bigint>): Uint8Array {
   const bytes = new Uint8Array(values.length * 8);
   const view = new DataView(bytes.buffer);
@@ -84,36 +87,39 @@ export function int64Chunk(values: Array<number | bigint>): Uint8Array {
   return bytes;
 }
 
-/** One pyramid level of a fixture channel: rank 1 is raw, rank 2 with a trailing 2 is minmax. */
-export type FixtureLevel = { shape: number[]; periodUs: number };
+/** One pyramid level of a fixture channel: rank 1 is raw, rank 2 with a trailing 2 is min/max. */
+export interface FixtureLevel {
+  shape: number[];
+  periodUs: number;
+}
 
 /** A non-level child array of a fixture channel. */
-export type FixtureArray = {
+export interface FixtureArray {
   shape: number[];
   dataType?: string;
   attributes?: Record<string, unknown>;
-};
+}
 
 /** One channel group of a fixture bundle, at digit path `path`. */
-export type FixtureChannel = {
+export interface FixtureChannel {
   path: string;
   attributes: Record<string, unknown>;
   /** Pyramid levels, named by index under the channel: `0/0`, `0/1`, ... */
   levels?: FixtureLevel[];
   /** Non-level child arrays by name; a bare number[] is a float32 shape with no attributes. */
   extraArrays?: Record<string, number[] | FixtureArray>;
-};
+}
 
 /**
- * A bundle's root `zarr.json` as a JSON string, with `consolidated_metadata` inlining every
- * descendant.
+ * Builds a bundle's root `zarr.json` as a JSON string, with `consolidated_metadata` inlining
+ * every descendant.
  *
  * Mirrors a real bundle: paths in `metadata` are flat and relative (`"0"`, `"0/1"`), and each
  * channel group carries its own empty `consolidated_metadata`, as the writer emits.
  *
- * `root` shallow-merges over the root object, which is how a test produces a malformed bundle -
- * `{ zarr_format: 2 }` to break the format, or `{ consolidated_metadata: undefined }` to drop
- * it, since `JSON.stringify` omits undefined values.
+ * `root` shallow-merges over the root object, for building malformed bundles: `{ zarr_format: 2 }`
+ * breaks the format; `{ consolidated_metadata: undefined }` drops the key, since
+ * `JSON.stringify` omits undefined values.
  */
 export function bundleMetadata(
   channels: FixtureChannel[],
@@ -174,7 +180,7 @@ export type BundleLevel =
   | { periodUs: number; pairs: number[] };
 
 /** One channel of a complete in-memory bundle. */
-export type BundleChannel = {
+export interface BundleChannel {
   path: string;
   attributes: Record<string, unknown>;
   levels?: BundleLevel[];
@@ -182,12 +188,12 @@ export type BundleChannel = {
   events?: number[];
   /** Spike waveforms: `samples` is rows flattened, one row of `pointsPerEvent` per event. */
   waveforms?: { periodUs: number; pointsPerEvent: number; samples: number[] };
-};
+}
 
 /**
- * Every file of a readable in-memory bundle: the consolidated root plus each array's own
- * `zarr.json` and single chunk. The root entries and the per-array metadata are generated
- * from one description, so they cannot drift apart the way hand-written pairs can.
+ * Builds every file of a readable in-memory bundle: the consolidated root plus each array's
+ * own `zarr.json` and single chunk. Root entries and per-array metadata are generated from
+ * the same description.
  */
 export function bundleFiles(
   channels: BundleChannel[],
@@ -253,8 +259,8 @@ export function bundleFiles(
 }
 
 /**
- * A `Segment` for tests, defaulting to an empty raw segment on channel "c" starting at 0 with
- * a 1000 us period.
+ * Builds a `Segment` for tests: by default an empty raw segment on channel "c" starting at 0
+ * with a 1000 us period.
  */
 export function makeSegment(overrides: Partial<Segment> = {}): Segment {
   return {

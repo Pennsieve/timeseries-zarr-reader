@@ -2,44 +2,39 @@ import { get, NotFoundError, open, root, slice } from "zarrita";
 import type { Store, StoreOptions } from "./types.js";
 
 /**
- * Open the array at `path`, pinning Zarr v3 and naming the path on a miss.
+ * Opens the array at `path`, pinned to Zarr v3.
  *
- * Two details that are easy to get wrong. `path` belongs on the location, not in the options:
- * an options `path` is ignored and the bundle root is opened instead. And the version is
- * pinned, since bundles are always Zarr v3: letting it auto-detect spends a request probing v2
- * and reports a missing array as a v2 failure, naming no path. Even the v3 miss names no path -
- * unhelpful when a query touches dozens of arrays - so it is rewrapped; any other failure, an
- * abort or bad metadata, passes through untouched.
+ * `path` is resolved onto the store's root location; an options `path` is ignored by
+ * zarrita. A missing array rejects with an Error naming the path; any other failure
+ * propagates unchanged.
  */
-const openArray = (store: Store, path: `/${string}`, opts?: StoreOptions) =>
-  open
-    .v3(root(store).resolve(path), { kind: "array", signal: opts?.signal })
-    .catch((cause: unknown) => {
-      if (cause instanceof NotFoundError) {
-        throw new Error(`no array at ${path}`, { cause });
-      }
-      throw cause;
+async function openArray(
+  store: Store,
+  path: `/${string}`,
+  opts?: StoreOptions,
+) {
+  try {
+    return await open.v3(root(store).resolve(path), {
+      kind: "array",
+      signal: opts?.signal,
     });
+  } catch (cause) {
+    if (cause instanceof NotFoundError) {
+      throw new Error(`no array at ${path}`, { cause });
+    }
+    throw cause;
+  }
+}
 
 /**
- * Read a level's bins over a half-open index range.
+ * Reads a level's bins over a half-open index range.
  *
- * The only place the reader touches Zarr. Everything above it works in bins and microseconds
- * and never learns how a chunk is stored, compressed, or sharded.
+ * The range is not clamped; derive it with {@link binRange}. An empty range returns
+ * empty data. A rank-1 array yields raw samples; a rank-2 `[n, 2]` array yields
+ * interleaved `[min, max, ...]` pairs. Stored float32 samples widen to `Float64Array`.
+ * `opts.signal` is forwarded to the store.
  *
- * The range is taken as given and is not clamped: pair it with {@link binRange}, which is what
- * turns a time window into indices the level actually has. An empty range yields empty data.
- *
- * A level's layout is read from the array's own rank rather than passed in - rank 1 is raw
- * samples, rank 2 with a trailing dimension of 2 is min/max pairs - and a rank-2 read comes back
- * flattened to interleaved `[min, max, min, max, ...]`, ready to become a segment's data.
- *
- * **Samples widen to `Float64Array`.** Bundles store float32; every number above this line is a
- * float64, so the widening happens once, here, rather than at each consumer.
- *
- * `opts.signal` reaches the store, which is the layer that can abort a request in flight.
- *
- * Throws if there is no array at `path`, or if its shape is neither of the two layouts.
+ * Throws when no array exists at `path` or its shape is neither `[n]` nor `[n, 2]`.
  */
 export async function readBins(
   store: Store,
@@ -59,37 +54,34 @@ export async function readBins(
     return Float64Array.from(region.data);
   }
   if (rank === 2 && array.shape[1] === 2) {
-    // A trailing axis of 2 flattens to the interleaved [min, max, ...] a segment carries.
+    // get() returns the [n, 2] read already flattened to interleaved [min, max, ...].
     const region = await get(array, [bins, null], opts);
     return Float64Array.from(region.data);
   }
 
   throw new Error(
-    `level ${path} has a shape the reader cannot read: ${JSON.stringify(array.shape)} (expected [n] or [n, 2])`,
+    `level ${path} has unsupported shape ${JSON.stringify(array.shape)} (expected [n] or [n, 2])`,
   );
 }
 
-/**
- * A handle over one rank-1 int64 timestamp array, opened once and read many times.
- *
- * A binary search reads one element per probe; a handle keeps those probes from re-fetching the
- * array's metadata every time.
- */
-export type TimestampReader = {
+/** A rank-1 int64 timestamp array, opened once for repeated range reads. */
+export interface TimestampReader {
   /** Total timestamps in the array. */
-  count: number;
+  readonly count: number;
   /** Timestamps over a half-open index range, as microsecond numbers. */
   read(start: number, end: number): Promise<Float64Array>;
-};
+}
+
+/** The largest int64 magnitude that converts exactly to a number. */
+const MAX_SAFE_TIMESTAMP = BigInt(Number.MAX_SAFE_INTEGER);
 
 /**
- * Open a timestamp array for reading.
+ * Opens a timestamp array for reading.
  *
- * Values are stored as int64 and converted to numbers. Microsecond timestamps sit far below
- * 2^53, so the conversion is exact; a value outside the safe integer range throws rather than
- * rounding silently.
+ * Stored int64 values are converted to numbers. The conversion is exact for
+ * microsecond timestamps; a value outside the safe integer range throws a RangeError.
  *
- * Throws if there is no array at `path`, or if it is not a rank-1 int64 array.
+ * Throws when no array exists at `path` or it is not rank-1 int64.
  */
 export async function openTimestamps(
   store: Store,
@@ -97,24 +89,24 @@ export async function openTimestamps(
   opts?: StoreOptions,
 ): Promise<TimestampReader> {
   const array = await openArray(store, path, opts);
-  if (array.shape.length !== 1 || array.dtype !== "int64") {
+  if (array.shape.length !== 1 || !array.is("int64")) {
     throw new Error(
       `timestamp array ${path} must be rank-1 int64 (got ${array.dtype} ${JSON.stringify(array.shape)})`,
     );
   }
 
   return {
-    count: array.shape[0] as number,
+    count: array.shape[0]!,
     read: async (start, end) => {
       if (end <= start) {
         return new Float64Array(0);
       }
       const region = await get(array, [slice(start, end)], opts);
-      const values = region.data as BigInt64Array;
+      const values = region.data;
       const out = new Float64Array(values.length);
       for (let i = 0; i < values.length; i++) {
-        const value = values[i] as bigint;
-        if (value > 9007199254740991n || value < -9007199254740991n) {
+        const value = values[i]!;
+        if (value > MAX_SAFE_TIMESTAMP || value < -MAX_SAFE_TIMESTAMP) {
           throw new RangeError(
             `timestamp ${value} in ${path} does not fit a safe integer`,
           );
@@ -127,12 +119,12 @@ export async function openTimestamps(
 }
 
 /**
- * Read whole rows of a rank-2 array over a half-open row range.
+ * Reads whole rows of a rank-2 array over a half-open row range.
  *
- * This is the waveform read: each row is one spike's samples. Rows come back flattened
- * row-major, `rowLength` values per row, widened to `Float64Array` like every other read.
+ * Rows are returned flattened row-major, `rowLength` values per row, widened to
+ * `Float64Array`. An empty range returns empty data and the row length.
  *
- * Throws if there is no array at `path`, or if it is not rank 2.
+ * Throws when no array exists at `path` or it is not rank 2.
  */
 export async function readRows(
   store: Store,
@@ -147,10 +139,11 @@ export async function readRows(
     );
   }
 
-  const rowLength = array.shape[1] as number;
+  const rowLength = array.shape[1]!;
   if (range.end <= range.start) {
     return { data: new Float64Array(0), rowLength };
   }
   const region = await get(array, [slice(range.start, range.end), null], opts);
+  // Bundles store rows as float32. The dtype is not validated.
   return { data: Float64Array.from(region.data as Float32Array), rowLength };
 }

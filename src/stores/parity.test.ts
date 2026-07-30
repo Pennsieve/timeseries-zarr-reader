@@ -1,17 +1,16 @@
+/**
+ * The same bundle read through the filesystem store and through the HTTP store must produce
+ * identical output. The test server is a minimal static file server supporting Range requests
+ * in offset and suffix forms, which the HTTP store requires.
+ */
 import { readFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { StreamingClient, openBundle } from "../index.js";
-
-/**
- * The same bundle read through the filesystem store and through the HTTP store must produce
- * identical output. The server is a minimal static file server with the one feature the HTTP
- * store cannot live without: Range requests, in both the offset and suffix forms.
- */
+import { collect } from "../test-utils.js";
 
 const BUNDLE = fileURLToPath(
   new URL("../../test-data/sample.zarr", import.meta.url),
@@ -65,8 +64,11 @@ beforeAll(async () => {
   await new Promise<void>((ready) => {
     server?.listen(0, "127.0.0.1", ready);
   });
-  const { port } = server.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${port}`;
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("server is not listening on a TCP port");
+  }
+  baseUrl = `http://127.0.0.1:${address.port}`;
 });
 
 afterAll(async () => {
@@ -109,11 +111,3 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
     await local.getSegmentSpans(spans),
   );
 });
-
-const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {
-  const out: T[] = [];
-  for await (const item of iterable) {
-    out.push(item);
-  }
-  return out;
-};
