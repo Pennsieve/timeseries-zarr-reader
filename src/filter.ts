@@ -1,6 +1,10 @@
-import { CalcCascades, IirFilter } from "fili";
-import type { FilterSpec, Segment } from "./types";
-import { FILTER_GAP_RESET_SAMPLES } from "./constants";
+// Default import: fili is CommonJS, and native Node ESM guarantees only the default
+// export for CJS modules.
+import fili from "fili";
+import type { FilterSpec, Segment } from "./types.js";
+import { FILTER_GAP_RESET_SAMPLES } from "./constants.js";
+
+const { CalcCascades, IirFilter } = fili;
 
 /**
  * The single characteristic the reader currently offers.

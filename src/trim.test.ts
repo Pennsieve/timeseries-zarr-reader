@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { makeSegment } from "./test-utils";
-import { trimToBounds } from "./trim";
+import { makeSegment } from "./test-utils.js";
+import { trimToBounds } from "./trim.js";
 
 const raw = (data: number[]) => makeSegment({ data: new Float64Array(data) });
 

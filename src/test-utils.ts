@@ -1,4 +1,4 @@
-import type { Segment, Store } from "./types";
+import type { Segment, Store } from "./types.js";
 
 /**
  * A `Store` backed by an object literal, for tests that need bundle bytes without a
@@ -9,7 +9,8 @@ import type { Segment, Store } from "./types";
  * held as given, not copied on the way in.
  *
  * An absent key resolves to `undefined` rather than throwing, matching the `Store` contract,
- * and an empty file stays distinct from an absent one.
+ * and an empty file stays distinct from an absent one. An already-aborted signal rejects the
+ * read.
  */
 export function createMemoryStore(
   files: Record<`/${string}`, string | Uint8Array>,
@@ -21,23 +22,25 @@ export function createMemoryStore(
   }
 
   return {
-    get: (key) => Promise.resolve(bytes.get(key)?.slice()),
-    getRange: (key, range) => {
+    get: async (key, opts) => {
+      opts?.signal?.throwIfAborted();
+      return bytes.get(key)?.slice();
+    },
+    getRange: async (key, range, opts) => {
+      opts?.signal?.throwIfAborted();
       const stored = bytes.get(key);
       if (stored === undefined) {
-        return Promise.resolve(undefined);
+        return undefined;
       }
-      return Promise.resolve(
-        "suffixLength" in range
-          ? stored.slice(stored.length - range.suffixLength)
-          : stored.slice(range.offset, range.offset + range.length),
-      );
+      return "suffixLength" in range
+        ? stored.slice(stored.length - range.suffixLength)
+        : stored.slice(range.offset, range.offset + range.length);
     },
   };
 }
 
 /**
- * Metadata for one unsharded, uncompressed little-endian float32 array.
+ * Metadata for one unsharded, uncompressed little-endian array.
  *
  * Deliberately plainer than a real bundle, whose arrays are sharded and Zstd-compressed: chunk
  * bytes for this layout can be written by hand, so a test needs no encoder and no Zarr writer.
@@ -46,12 +49,13 @@ export function arrayMetadata(
   shape: number[],
   chunkShape: number[] = shape,
   attributes: Record<string, unknown> = {},
+  dataType = "float32",
 ): string {
   return JSON.stringify({
     zarr_format: 3,
     node_type: "array",
     shape,
-    data_type: "float32",
+    data_type: dataType,
     chunk_grid: { name: "regular", configuration: { chunk_shape: chunkShape } },
     chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
     codecs: [{ name: "bytes", configuration: { endian: "little" } }],
@@ -70,8 +74,25 @@ export function float32Chunk(values: number[]): Uint8Array {
   return bytes;
 }
 
+/** One chunk's worth of int64 bytes, little-endian. Accepts bigint for out-of-range values. */
+export function int64Chunk(values: Array<number | bigint>): Uint8Array {
+  const bytes = new Uint8Array(values.length * 8);
+  const view = new DataView(bytes.buffer);
+  values.forEach((value, index) => {
+    view.setBigInt64(index * 8, BigInt(value), true);
+  });
+  return bytes;
+}
+
 /** One pyramid level of a fixture channel: rank 1 is raw, rank 2 with a trailing 2 is minmax. */
 export type FixtureLevel = { shape: number[]; periodUs: number };
+
+/** A non-level child array of a fixture channel. */
+export type FixtureArray = {
+  shape: number[];
+  dataType?: string;
+  attributes?: Record<string, unknown>;
+};
 
 /** One channel group of a fixture bundle, at digit path `path`. */
 export type FixtureChannel = {
@@ -79,8 +100,8 @@ export type FixtureChannel = {
   attributes: Record<string, unknown>;
   /** Pyramid levels, named by index under the channel: `0/0`, `0/1`, ... */
   levels?: FixtureLevel[];
-  /** Non-level child arrays by name, e.g. `{ events: [128] }`, given as shapes. */
-  extraArrays?: Record<string, number[]>;
+  /** Non-level child arrays by name; a bare number[] is a float32 shape with no attributes. */
+  extraArrays?: Record<string, number[] | FixtureArray>;
 };
 
 /**
@@ -122,13 +143,14 @@ export function bundleMetadata(
       };
     });
 
-    for (const [name, shape] of Object.entries(channel.extraArrays ?? {})) {
+    for (const [name, spec] of Object.entries(channel.extraArrays ?? {})) {
+      const array = Array.isArray(spec) ? { shape: spec } : spec;
       metadata[`${channel.path}/${name}`] = {
-        attributes: {},
+        attributes: array.attributes ?? {},
         zarr_format: 3,
         node_type: "array",
-        shape,
-        data_type: "float32",
+        shape: array.shape,
+        data_type: array.dataType ?? "float32",
       };
     }
   }
@@ -144,6 +166,90 @@ export function bundleMetadata(
     },
     ...root,
   });
+}
+
+/** One pyramid level with its data: raw samples, or flattened [min, max, ...] pairs. */
+export type BundleLevel =
+  | { periodUs: number; samples: number[] }
+  | { periodUs: number; pairs: number[] };
+
+/** One channel of a complete in-memory bundle. */
+export type BundleChannel = {
+  path: string;
+  attributes: Record<string, unknown>;
+  levels?: BundleLevel[];
+  /** Event timestamps in microseconds, written as int64. */
+  events?: number[];
+  /** Spike waveforms: `samples` is rows flattened, one row of `pointsPerEvent` per event. */
+  waveforms?: { periodUs: number; pointsPerEvent: number; samples: number[] };
+};
+
+/**
+ * Every file of a readable in-memory bundle: the consolidated root plus each array's own
+ * `zarr.json` and single chunk. The root entries and the per-array metadata are generated
+ * from one description, so they cannot drift apart the way hand-written pairs can.
+ */
+export function bundleFiles(
+  channels: BundleChannel[],
+): Record<`/${string}`, string | Uint8Array> {
+  const files: Record<`/${string}`, string | Uint8Array> = {};
+  const rootChannels: FixtureChannel[] = [];
+
+  for (const channel of channels) {
+    const levels: FixtureLevel[] = [];
+    (channel.levels ?? []).forEach((level, index) => {
+      const raw = "samples" in level;
+      const values = raw ? level.samples : level.pairs;
+      const shape = raw ? [values.length] : [values.length / 2, 2];
+      levels.push({ shape, periodUs: level.periodUs });
+      files[`/${channel.path}/${index}/zarr.json`] = arrayMetadata(
+        shape,
+        shape,
+        { period_us: level.periodUs },
+      );
+      files[`/${channel.path}/${index}/c/${raw ? "0" : "0/0"}`] =
+        float32Chunk(values);
+    });
+
+    const extraArrays: Record<string, FixtureArray> = {};
+    if (channel.events) {
+      const shape = [channel.events.length];
+      extraArrays.events = { shape, dataType: "int64" };
+      files[`/${channel.path}/events/zarr.json`] = arrayMetadata(
+        shape,
+        shape,
+        {},
+        "int64",
+      );
+      files[`/${channel.path}/events/c/0`] = int64Chunk(channel.events);
+    }
+    if (channel.waveforms) {
+      const { periodUs, pointsPerEvent, samples } = channel.waveforms;
+      const shape = [samples.length / pointsPerEvent, pointsPerEvent];
+      extraArrays.waveforms = {
+        shape,
+        attributes: { period_us: periodUs },
+      };
+      files[`/${channel.path}/waveforms/zarr.json`] = arrayMetadata(
+        shape,
+        shape,
+        {
+          period_us: periodUs,
+        },
+      );
+      files[`/${channel.path}/waveforms/c/0/0`] = float32Chunk(samples);
+    }
+
+    rootChannels.push({
+      path: channel.path,
+      attributes: channel.attributes,
+      levels,
+      extraArrays,
+    });
+  }
+
+  files["/zarr.json"] = bundleMetadata(rootChannels);
+  return files;
 }
 
 /**

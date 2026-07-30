@@ -1,7 +1,7 @@
 import { open, readFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { ByteRange, Store, StoreOptions } from "../types";
+import type { ByteRange, Store, StoreOptions } from "../types.js";
 
 /** True for the filesystem's "no such file" - the one failure that means an absent key. */
 const isMissing = (error: unknown): boolean =>

@@ -1,0 +1,12 @@
+{
+  "attributes": {
+    "id": "sineA",
+    "rate_hz": 1000.0,
+    "start_us": 1704067200000000,
+    "kind": "continuous",
+    "name": "Sine A",
+    "unit": "uV"
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

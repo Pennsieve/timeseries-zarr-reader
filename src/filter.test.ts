@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
-import { FILTER_GAP_RESET_SAMPLES } from "./constants";
-import { makeSegment } from "./test-utils";
-import { createFilterSession, makeFilter } from "./filter";
+import { FILTER_GAP_RESET_SAMPLES } from "./constants.js";
+import { makeSegment } from "./test-utils.js";
+import { createFilterSession, makeFilter } from "./filter.js";
 
 const RATE_HZ = 1000;
 const PERIOD_US = 1000;

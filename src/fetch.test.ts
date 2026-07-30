@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createFetchLimit } from "./fetch";
+import { createFetchLimit } from "./fetch.js";
 
 /** A promise plus the handles to settle it, for driving task completion by hand. */
 const deferred = <T>() => {

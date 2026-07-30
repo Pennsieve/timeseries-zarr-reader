@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FetchStore } from "zarrita";
-import { FileStore } from "./file";
-import { openBundle } from "./open-bundle";
+import { FileStore } from "./file.js";
+import {
+  FetchStore as ReExportedFetchStore,
+  openBundle,
+} from "./open-bundle.js";
 
 let root: string;
 
@@ -47,6 +50,10 @@ test("opens http and https URLs with the fetch store", async () => {
   expect(await openBundle("https://example.org/sample.zarr")).toBeInstanceOf(
     FetchStore,
   );
+});
+
+test("re-exports zarrita's FetchStore unchanged", () => {
+  expect(ReExportedFetchStore).toBe(FetchStore);
 });
 
 test("refuses a scheme it has no store for", async () => {

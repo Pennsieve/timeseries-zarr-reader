@@ -1,4 +1,4 @@
-import type { Segment } from "./types";
+import type { Segment } from "./types.js";
 
 /**
  * Reduce a segment to one [min, max] pair per output pixel.

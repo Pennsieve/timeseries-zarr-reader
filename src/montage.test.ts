@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { ChannelInfo } from "./types";
-import { compoundKey, subtract } from "./montage";
+import type { ChannelInfo } from "./types.js";
+import { compoundKey, subtract } from "./montage.js";
 
 const channel = (
   id: string,

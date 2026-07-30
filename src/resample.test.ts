@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { makeSegment } from "./test-utils";
-import { resampleToPixels } from "./resample";
+import { makeSegment } from "./test-utils.js";
+import { resampleToPixels } from "./resample.js";
 
 const raw = (data: number[], samplePeriodUs = 1000) =>
   makeSegment({ samplePeriodUs, data: new Float64Array(data) });

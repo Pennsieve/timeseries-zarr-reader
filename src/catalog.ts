@@ -1,4 +1,4 @@
-import type { ChannelInfo, Store } from "./types";
+import type { ChannelInfo, Store } from "./types.js";
 
 /**
  * The bin period and how many samples it holds.
@@ -192,6 +192,19 @@ export type LevelInfo = {
   isMinMax: boolean;
 };
 
+/** Where a unit channel's event data lives, read from the same consolidated metadata. */
+export type UnitArrays = {
+  /** Event timestamps: rank-1 int64 microseconds, ascending. */
+  events: { path: `/${string}`; count: number };
+  /** Spike waveforms: one row of `pointsPerEvent` samples per event. */
+  waveforms: {
+    path: `/${string}`;
+    pointsPerEvent: number;
+    /** Sample period within one waveform, in microseconds. */
+    periodUs: number;
+  };
+};
+
 /** One channel: where it lives, what it is, and the levels available for it. */
 export type ChannelEntry = {
   /** Absolute store path of the channel group. Opaque - not the channel id. */
@@ -199,6 +212,8 @@ export type ChannelEntry = {
   info: ChannelInfo;
   /** Finest level first. Empty for a unit channel, which has no pyramid. */
   levels: LevelInfo[];
+  /** Event and waveform arrays. Present only when `info.kind` is "unit". */
+  unit?: UnitArrays;
 };
 
 /**
@@ -212,30 +227,6 @@ export type BundleCatalog = {
   byId: Map<string, ChannelEntry>;
 };
 
-/**
- * Read a bundle's root metadata and enumerate its channels and levels.
- *
- * One read of `/zarr.json`. Zarr's `consolidated_metadata` inlines every descendant's metadata
- * there, so the whole bundle is described by that single request and no per-channel round trips
- * are needed. Its entries are flat, relative paths - `"0"` for a channel group, `"0/1"` for a
- * level array - and depth is what distinguishes them.
- *
- * A missing `consolidated_metadata` is an error rather than a signal to walk the tree: a walk
- * costs one sequential request per node, and the writer always consolidates.
- *
- * Nodes that are neither a channel group nor a numbered level array are ignored, which covers
- * both a unit channel's `events`/`units`/`waveforms` arrays and anything a later format version
- * adds. A channel group's own (empty) `consolidated_metadata` is likewise ignored.
- *
- * Levels come back finest first. A level's layout is read from its rank, per the bundle format:
- * rank 1 is raw, rank 2 with a trailing dimension of 2 is a min/max envelope.
- *
- * Throws when the bundle cannot be addressed: no `/zarr.json`, unparseable JSON, a root that is
- * not a Zarr v3 group, no `consolidated_metadata`, a level whose shape is neither of the two
- * layouts, a level with no usable `period_us`, a continuous channel with no raw level to end it,
- * or two channels claiming one id. A malformed channel attribute surfaces the naming error from
- * {@link toChannelInfo} unchanged.
- */
 /** Narrow parsed JSON to an object, or undefined for anything else including null. */
 const asObject = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null
@@ -269,6 +260,87 @@ const readLevel = (
   return { path, periodUs, binCount, isMinMax: dims.length === 2 };
 };
 
+/** Read a unit channel's events and waveforms arrays, or throw naming what is wrong. */
+const readUnitArrays = (
+  channelPath: string,
+  named: Map<string, Record<string, unknown>>,
+): UnitArrays => {
+  const dims = (name: string): unknown[] | undefined => {
+    const shape = named.get(name)?.shape;
+    return Array.isArray(shape) ? (shape as unknown[]) : undefined;
+  };
+
+  const eventDims = dims("events");
+  const count = eventDims?.[0];
+  if (eventDims?.length !== 1 || typeof count !== "number") {
+    throw new Error(
+      `unit channel /${channelPath} needs an events array of shape [n]`,
+    );
+  }
+
+  const waveformDims = dims("waveforms");
+  const rows = waveformDims?.[0];
+  const pointsPerEvent = waveformDims?.[1];
+  if (
+    waveformDims?.length !== 2 ||
+    typeof rows !== "number" ||
+    typeof pointsPerEvent !== "number"
+  ) {
+    throw new Error(
+      `unit channel /${channelPath} needs a waveforms array of shape [n, points_per_event]`,
+    );
+  }
+  if (rows !== count) {
+    throw new Error(
+      `unit channel /${channelPath} has ${count} events but ${rows} waveform rows`,
+    );
+  }
+
+  const periodUs: unknown = asObject(
+    named.get("waveforms")?.attributes,
+  )?.period_us;
+  if (typeof periodUs !== "number" || !(periodUs > 0)) {
+    throw new Error(
+      `unit channel /${channelPath} waveforms has no usable period_us (got ${JSON.stringify(periodUs)})`,
+    );
+  }
+
+  return {
+    events: { path: `/${channelPath}/events`, count },
+    waveforms: {
+      path: `/${channelPath}/waveforms`,
+      pointsPerEvent,
+      periodUs,
+    },
+  };
+};
+
+/**
+ * Read a bundle's root metadata and enumerate its channels and levels.
+ *
+ * One read of `/zarr.json`. Zarr's `consolidated_metadata` inlines every descendant's metadata
+ * there, so the whole bundle is described by that single request and no per-channel round trips
+ * are needed. Its entries are flat, relative paths - `"0"` for a channel group, `"0/1"` for a
+ * level array - and depth is what distinguishes them.
+ *
+ * A missing `consolidated_metadata` is an error rather than a signal to walk the tree: a walk
+ * costs one sequential request per node, and the writer always consolidates.
+ *
+ * A unit channel's `events` and `waveforms` arrays are read into {@link UnitArrays}; its
+ * `units` cluster-id array is not consumed and stays unread. Other unrecognised nodes are
+ * ignored, leaving room for the format to grow. A channel group's own (empty)
+ * `consolidated_metadata` is likewise ignored.
+ *
+ * Levels come back finest first. A level's layout is read from its rank, per the bundle format:
+ * rank 1 is raw, rank 2 with a trailing dimension of 2 is a min/max envelope.
+ *
+ * Throws when the bundle cannot be addressed: no `/zarr.json`, unparseable JSON, a root that is
+ * not a Zarr v3 group, no `consolidated_metadata`, a level whose shape is neither of the two
+ * layouts, a level with no usable `period_us`, a continuous channel with no raw level to end it,
+ * a unit channel whose events or waveforms are missing or malformed, or two channels claiming
+ * one id. A malformed channel attribute surfaces the naming error from {@link toChannelInfo}
+ * unchanged.
+ */
 export async function readCatalog(store: Store): Promise<BundleCatalog> {
   const bytes = await store.get("/zarr.json");
   if (bytes === undefined) {
@@ -308,6 +380,10 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
   // consolidated_metadata is empty and contributes nothing, so only this map is walked.
   const groups = new Map<string, Record<string, unknown>>();
   const levelsByChannel = new Map<string, LevelInfo[]>();
+  const namedByChannel = new Map<
+    string,
+    Map<string, Record<string, unknown>>
+  >();
 
   for (const [nodePath, value] of Object.entries(nodes)) {
     const node = asObject(value);
@@ -323,17 +399,23 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       continue;
     }
 
-    // Only a numbered array directly under a channel is a pyramid level. A unit channel's
-    // named arrays and anything a later format version adds are left alone.
+    // A numbered array directly under a channel is a pyramid level; a named one is a unit
+    // channel's data. Anything deeper or stranger is left alone.
     const channelPath = nodePath.slice(0, slash);
     const leaf = nodePath.slice(slash + 1);
-    if (node.node_type !== "array" || !/^\d+$/.test(leaf)) {
+    if (node.node_type !== "array" || leaf.includes("/")) {
       continue;
     }
 
-    const levels = levelsByChannel.get(channelPath) ?? [];
-    levels.push(readLevel(`/${nodePath}`, node));
-    levelsByChannel.set(channelPath, levels);
+    if (/^\d+$/.test(leaf)) {
+      const levels = levelsByChannel.get(channelPath) ?? [];
+      levels.push(readLevel(`/${nodePath}`, node));
+      levelsByChannel.set(channelPath, levels);
+    } else {
+      const named = namedByChannel.get(channelPath) ?? new Map();
+      named.set(leaf, node);
+      namedByChannel.set(channelPath, named);
+    }
   }
 
   const channels: ChannelEntry[] = [];
@@ -361,6 +443,12 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       ),
       levels,
     };
+    if (entry.info.kind === "unit") {
+      entry.unit = readUnitArrays(
+        channelPath,
+        namedByChannel.get(channelPath) ?? new Map(),
+      );
+    }
 
     const claimed = byId.get(entry.info.id);
     if (claimed !== undefined) {

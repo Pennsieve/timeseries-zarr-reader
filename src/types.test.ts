@@ -8,7 +8,7 @@ import type {
   Segment,
   Store,
   StoreOptions,
-} from "./types";
+} from "./types.js";
 
 test("Segment has the documented shape", () => {
   const seg: Segment = {

@@ -7,13 +7,18 @@
  * is specified by centre frequency and width, not by the two edges, and the
  * width is in octaves. Passing edge frequencies under other names silently yields
  * null coefficients and a filter that returns NaN.
+ *
+ * The package is CommonJS (a UMD bundle), so the module is declared with `export =`,
+ * its accurate shape: one exported object, consumed via a default import. Named ESM
+ * imports parse under a bundler but fail on native Node, whose CJS interop guarantees
+ * only the default export.
  */
 declare module "fili" {
   /**
    * A biquad's coefficients plus its delay registers. Produced by
    * the cascade builders and consumed by the filter, opaque in between.
    */
-  export type BiquadCoeffs = {
+  type BiquadCoeffs = {
     a: number[];
     b: number[];
     k: number;
@@ -22,7 +27,7 @@ declare module "fili" {
   };
 
   /** How to build one cascade. Frequencies are in hertz, matching `Fs`. */
-  export type CascadeParams = {
+  type CascadeParams = {
     /** Number of stages; the builder clamps above 12 rather than refusing. */
     order: number;
     characteristic: "butterworth";
@@ -35,7 +40,7 @@ declare module "fili" {
   };
 
   /** Builds the per-stage coefficients for a cascaded IIR filter. */
-  export class CalcCascades {
+  interface CalcCascades {
     lowpass(params: CascadeParams): BiquadCoeffs[];
     highpass(params: CascadeParams): BiquadCoeffs[];
     bandpass(params: CascadeParams): BiquadCoeffs[];
@@ -46,8 +51,7 @@ declare module "fili" {
    * A cascaded IIR filter. Each instance owns its delay registers,
    * so instances built from the same coefficients stay independent.
    */
-  export class IirFilter {
-    constructor(coeffs: BiquadCoeffs[]);
+  interface IirFilter {
     /**
      * Filter a run of samples in order, returning a plain array, including
      * when handed a typed array. Use `overwrite` to filter in place instead.
@@ -56,4 +60,10 @@ declare module "fili" {
     /** Zero the delay registers. */
     reinit(): void;
   }
+
+  const fili: {
+    CalcCascades: new () => CalcCascades;
+    IirFilter: new (coeffs: BiquadCoeffs[]) => IirFilter;
+  };
+  export = fili;
 }

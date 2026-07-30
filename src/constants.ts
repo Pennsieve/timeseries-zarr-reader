@@ -18,9 +18,14 @@ export const MAX_INFLIGHT_FETCHES = 8;
 export const FILTER_GAP_RESET_SAMPLES = 100;
 
 /**
- * Gates spike-waveform fetching. Waveforms are fetched only when a single waveform is wide
- * enough on screen to be worth drawing, i.e. when
- * `pixelWidthUs * SEND_SPIKE_THRESHOLD < waveformDurationUs`. Larger values fetch waveforms
- * only when more zoomed in.
+ * A segment is resampled onto the pixel grid only when one pixel spans more than this many
+ * source bins. Below it the data already sits near pixel resolution and is delivered as
+ * fetched.
+ */
+export const RESAMPLE_PIXEL_RATIO = 3;
+
+/**
+ * Gates spike-waveform fetching: a waveform is fetched only when it spans more than this
+ * many pixels on screen. Larger values fetch waveforms only when more zoomed in.
  */
 export const SEND_SPIKE_THRESHOLD = 10;

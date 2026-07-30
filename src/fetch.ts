@@ -1,5 +1,5 @@
 import pLimit from "p-limit";
-import { MAX_INFLIGHT_FETCHES } from "./constants";
+import { MAX_INFLIGHT_FETCHES } from "./constants.js";
 
 /**
  * A gate that runs at most a fixed number of tasks at once.

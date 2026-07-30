@@ -1,4 +1,4 @@
-import type { Segment } from "./types";
+import type { Segment } from "./types.js";
 
 /**
  * Trim a fetched segment to a query window.

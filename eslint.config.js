@@ -15,7 +15,7 @@ const agnosticGuard = {
     "@pennsieve-viz/*",
   ],
   message:
-    "The core is framework agnostic and disables viewer/framework imports.",
+    "The reader is framework agnostic and disables viewer/framework imports.",
 };
 
 /** zarrita may be imported only in src/zarr.ts and src/stores/**. Every other module should remain zarrita agnostic. */
@@ -62,6 +62,17 @@ export default tseslint.config(
     files: ["src/stores/**/*.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [agnosticGuard] }],
+    },
+  },
+  {
+    // Tests run under vitest on Node and may use Node builtins for fixtures; the zarrita
+    // ban stays, keeping every module testable against an in-memory Store.
+    files: ["src/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { patterns: [agnosticGuard, zarritaGuard] },
+      ],
     },
   },
   prettier,

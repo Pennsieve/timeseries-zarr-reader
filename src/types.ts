@@ -1,6 +1,5 @@
 /**
- * A contiguous run of one channel's data for a single (channel, chunk), ready for canvas
- * rendering.
+ * A contiguous run of one trace's data over a queried window, ready for canvas rendering.
  *
  * Timestamps are UTC microseconds.
  *
@@ -83,9 +82,7 @@ export type FilterSpec =
 
 /**
  * Unit/spike output for one channel over a query window.
- * The reader's analogue of the legacy streaming service's neural-event message.
  * Timestamps are UTC microseconds; waveform samples are physical units.
- * `times` and `data` are flattened interleaved pairs (two values per entry).
  */
 export type Event = {
   /** Channel id this event stream belongs to. */
@@ -100,9 +97,12 @@ export type Event = {
   pointsPerEvent: number;
   /** True when the waveforms were resampled to fit the pixel budget. */
   isResampled: boolean;
-  /** Event times as flattened interleaved pairs. */
+  /** Event timestamps within the window, in microseconds, ascending. */
   times: Float64Array;
-  /** Spike waveform samples as flattened interleaved (min, max) pairs. */
+  /**
+   * Waveform samples, one row of `pointsPerEvent` values per event, flattened row-major.
+   * Empty when waveforms were not fetched.
+   */
   data: Float64Array;
 };
 

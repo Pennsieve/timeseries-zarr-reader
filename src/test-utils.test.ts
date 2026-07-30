@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createMemoryStore } from "./test-utils";
+import { createMemoryStore } from "./test-utils.js";
 
 test("resolves the bytes stored for a key", async () => {
   const store = createMemoryStore({ "/a.bin": new Uint8Array([1, 2, 3]) });
@@ -49,6 +49,15 @@ test("resolves undefined for a range of an absent key", async () => {
   await expect(
     store.getRange("/missing", { offset: 0, length: 1 }),
   ).resolves.toBeUndefined();
+});
+
+test("rejects reads carrying an already-aborted signal", async () => {
+  const store = createMemoryStore({ "/a.bin": new Uint8Array([1]) });
+  const signal = AbortSignal.abort();
+  await expect(store.get("/a.bin", { signal })).rejects.toThrow(/abort/i);
+  await expect(
+    store.getRange("/a.bin", { offset: 0, length: 1 }, { signal }),
+  ).rejects.toThrow(/abort/i);
 });
 
 test("resolves a copy, so mutating a read cannot corrupt the fixture", async () => {

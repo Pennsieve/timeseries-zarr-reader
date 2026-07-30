@@ -1,12 +1,15 @@
 import { FetchStore } from "zarrita";
-import type { Store } from "../types";
+import type { Store } from "../types.js";
+
+// The HTTP store the reader itself picks for http(s) locations, re-exported for consumers.
+export { FetchStore };
 
 const SUPPORTED =
   'http(s):// URLs, file:// URLs, and absolute filesystem paths starting with "/"';
 
 /** Load the filesystem store on demand, so its `node:fs` import stays out of a browser bundle. */
 const fileStore = async (path: string): Promise<Store> => {
-  const { FileStore } = await import("./file");
+  const { FileStore } = await import("./file.js");
   return new FileStore(path);
 };
 

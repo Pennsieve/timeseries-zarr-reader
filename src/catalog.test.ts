@@ -1,8 +1,17 @@
 import { expect, test } from "vitest";
-import type { FixtureChannel } from "./test-utils";
-import { bundleMetadata, createMemoryStore, makeSegment } from "./test-utils";
-import { trimToBounds } from "./trim";
-import { binRange, readCatalog, selectLevel, toChannelInfo } from "./catalog";
+import type { FixtureChannel } from "./test-utils.js";
+import {
+  bundleMetadata,
+  createMemoryStore,
+  makeSegment,
+} from "./test-utils.js";
+import { trimToBounds } from "./trim.js";
+import {
+  binRange,
+  readCatalog,
+  selectLevel,
+  toChannelInfo,
+} from "./catalog.js";
 
 const START_US = 1_700_000_000_000_000;
 
@@ -272,30 +281,94 @@ test("returns levels finest first however they are stored", async () => {
   ]);
 });
 
+const unitChannel = (over: Partial<FixtureChannel> = {}): FixtureChannel => ({
+  path: "2",
+  attributes: { ...continuousAttrs, id: "ch-9", kind: "unit" },
+  extraArrays: {
+    events: [128],
+    units: [128],
+    waveforms: { shape: [128, 32], attributes: { period_us: 40 } },
+  },
+  ...over,
+});
+
 test("enumerates a unit channel, which has no levels", async () => {
-  const catalog = await readCatalog(
-    storeOf({
-      path: "2",
-      attributes: { ...continuousAttrs, id: "ch-9", kind: "unit" },
-      extraArrays: { events: [128], units: [128], waveforms: [128, 32] },
-    }),
-  );
+  const catalog = await readCatalog(storeOf(unitChannel()));
 
   const entry = catalog.byId.get("ch-9");
   expect(entry?.info.kind).toBe("unit");
   expect(entry?.levels).toEqual([]);
   expect(entry?.info.endUs).toBe(START_US);
+  expect(entry?.unit).toEqual({
+    events: { path: "/2/events", count: 128 },
+    waveforms: { path: "/2/waveforms", pointsPerEvent: 32, periodUs: 40 },
+  });
+});
+
+test("gives a continuous channel no unit arrays", async () => {
+  const catalog = await readCatalog(storeOf(continuousChannel()));
+  expect(catalog.channels[0]?.unit).toBeUndefined();
 });
 
 test("enumerates every channel in a mixed bundle", async () => {
   const catalog = await readCatalog(
-    storeOf(continuousChannel(), {
-      path: "1",
-      attributes: { ...continuousAttrs, id: "ch-2", kind: "unit" },
-      extraArrays: { events: [8] },
+    storeOf(continuousChannel(), unitChannel({ path: "1" })),
+  );
+  expect([...catalog.byId.keys()]).toEqual(["ch-1", "ch-9"]);
+});
+
+test("rejects a unit channel with no arrays at all", async () => {
+  const store = storeOf(unitChannel({ extraArrays: {} }));
+  await expect(readCatalog(store)).rejects.toThrow(/events/);
+});
+
+test("rejects a unit channel with no events array", async () => {
+  const store = storeOf(
+    unitChannel({
+      extraArrays: {
+        waveforms: { shape: [128, 32], attributes: { period_us: 40 } },
+      },
     }),
   );
-  expect([...catalog.byId.keys()]).toEqual(["ch-1", "ch-2"]);
+  await expect(readCatalog(store)).rejects.toThrow(/events/);
+});
+
+test("rejects a unit channel whose events array is not rank 1", async () => {
+  const store = storeOf(
+    unitChannel({
+      extraArrays: {
+        events: [128, 2],
+        waveforms: { shape: [128, 32], attributes: { period_us: 40 } },
+      },
+    }),
+  );
+  await expect(readCatalog(store)).rejects.toThrow(/events/);
+});
+
+test("rejects a unit channel with no waveforms array", async () => {
+  const store = storeOf(unitChannel({ extraArrays: { events: [128] } }));
+  await expect(readCatalog(store)).rejects.toThrow(/waveforms/);
+});
+
+test("rejects a unit channel whose event and waveform counts disagree", async () => {
+  const store = storeOf(
+    unitChannel({
+      extraArrays: {
+        events: [100],
+        waveforms: { shape: [128, 32], attributes: { period_us: 40 } },
+      },
+    }),
+  );
+  await expect(readCatalog(store)).rejects.toThrow(/100 events but 128/);
+});
+
+test("rejects a unit channel whose waveforms carry no usable period", async () => {
+  const store = storeOf(
+    unitChannel({
+      extraArrays: { events: [128], waveforms: { shape: [128, 32] } },
+    }),
+  );
+  await expect(readCatalog(store)).rejects.toThrow(/period_us/);
 });
 
 test("rejects a bundle with no root metadata", async () => {
@@ -321,6 +394,7 @@ test("ignores metadata entries that are neither channel groups nor levels", asyn
   const { metadata } = root.consolidated_metadata;
   metadata.junk = 42;
   metadata.sidecar = { node_type: "array", shape: [4], attributes: {} };
+  metadata["0/extra/deep"] = { node_type: "array", shape: [4], attributes: {} };
   const store = createMemoryStore({ "/zarr.json": JSON.stringify(root) });
 
   const catalog = await readCatalog(store);

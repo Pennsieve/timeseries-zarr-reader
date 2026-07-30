@@ -1,4 +1,4 @@
-import type { ChannelInfo } from "./types";
+import type { ChannelInfo } from "./types.js";
 
 /**
  * Subtract one channel's samples from another, sample by sample.
