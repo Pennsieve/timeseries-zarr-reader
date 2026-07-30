@@ -52,6 +52,17 @@ const attrs = (
 
 const RAW_A = Array.from({ length: 32 }, (_, i) => i);
 const RAW_B = RAW_A.map((value) => value + 100);
+/**
+ * A sine at 512 Hz, for the channel whose sample period is not a whole microsecond.
+ * Rounded to float32 up front, since that is what a bundle stores and a read returns.
+ */
+const FRACTIONAL = Array.from(
+  Float32Array.from(
+    Array.from({ length: 256 }, (_, i) =>
+      Math.sin((2 * Math.PI * 20 * i) / 512),
+    ),
+  ),
+);
 
 const CHANNELS: BundleChannel[] = [
   {
@@ -118,6 +129,13 @@ const CHANNELS: BundleChannel[] = [
     attributes: { ...attrs("m", "M", 1000), start_us: 1_000_500 },
     levels: [{ periodUs: 1000, samples: [0, 0, 0, 0, 0, 0, 0, 0] }],
   },
+  {
+    // 512 Hz from an epoch start: period_us is 1953.125 and startUs arithmetic rounds,
+    // so no drift lands on an exact period.
+    path: "8",
+    attributes: { ...attrs("f", "F", 512), start_us: 1_704_067_200_000_000 },
+    levels: [{ periodUs: 1e6 / 512, samples: FRACTIONAL }],
+  },
 ];
 
 const makeClient = (maxRawBytes?: number) =>
@@ -128,6 +146,7 @@ const makeClient = (maxRawBytes?: number) =>
 
 const FULL = { startUs: 1_000_000, endUs: 1_032_000 };
 const LOWPASS = { type: "lowpass", order: 4, cutoffHz: 100 } as const;
+const LOWPASS_512 = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
 
 describe("catalog", () => {
   test("channelInfo lists every channel from a single root read", async () => {
@@ -156,6 +175,7 @@ describe("catalog", () => {
       "u",
       "d",
       "m",
+      "f",
     ]);
     expect(rootReads).toBe(1);
   });
@@ -176,7 +196,7 @@ describe("catalog", () => {
     const client = new StreamingClient({ store });
 
     await expect(client.channelInfo()).rejects.toThrow(/transient outage/);
-    expect((await client.channelInfo()).length).toBe(8);
+    expect((await client.channelInfo()).length).toBe(9);
   });
 
   test("channelInfo returns a fresh copy per call", async () => {
@@ -573,12 +593,16 @@ describe("filter", () => {
     expect(Array.from(segment.data)).toEqual(pairsOf(Array.from(filtered), 8));
   });
 
-  test("filters continuously across a seam that falls between samples", async () => {
+  test("filters continuously across seams that fall between samples", async () => {
     const client = makeClient();
     const chunked: number[] = [];
+    const starts: number[] = [];
+    // No window edge lands on a sample, so each read shares its first sample with the
+    // previous read. Three pages, so the bookkeeping after a drop is exercised too.
     for (const page of [
       { startUs: 1_000_500, endUs: 1_005_500 },
       { startUs: 1_005_500, endUs: 1_010_500 },
+      { startUs: 1_010_500, endUs: 1_015_500 },
     ]) {
       const segment = await collectOne(
         client.query({
@@ -589,15 +613,47 @@ describe("filter", () => {
           filter: LOWPASS,
         }),
       );
+      starts.push(segment.startUs);
       chunked.push(...Array.from(segment.data));
     }
 
-    // Neither window edge lands on a sample, so the two reads share the sample at
-    // 1_005_000. Each sample must still reach the filter exactly once.
-    expect(chunked).toHaveLength(11);
+    // Each page resumes on the first sample the previous page did not return.
+    expect(starts).toEqual([1_000_000, 1_006_000, 1_011_000]);
+    expect(chunked).toHaveLength(16);
     const expected = createFilter(LOWPASS, 1000).process(
-      Float64Array.from(RAW_A.slice(0, chunked.length)),
+      Float64Array.from(RAW_A.slice(0, 16)),
     );
+    expect(chunked).toEqual(Array.from(expected));
+  });
+
+  test("filters continuously on a channel whose period is not a whole microsecond", async () => {
+    // 512 Hz from an epoch start: startUs values round, so a seam's drift is never
+    // exactly one period.
+    const client = makeClient();
+    const info = channelById(await client.channelInfo(), "f");
+    const periodUs = 1e6 / 512;
+    const seam = info.startUs + 100.5 * periodUs;
+    const chunked: number[] = [];
+    for (const page of [
+      { startUs: info.startUs + 0.5 * periodUs, endUs: seam },
+      { startUs: seam, endUs: seam + 100 * periodUs },
+    ]) {
+      const segment = await collectOne(
+        client.query({
+          channels: ["f"],
+          ...page,
+          pixelWidthUs: periodUs,
+          raw: true,
+          filter: LOWPASS_512,
+        }),
+      );
+      chunked.push(...Array.from(segment.data));
+    }
+
+    const expected = createFilter(LOWPASS_512, 512).process(
+      Float64Array.from(FRACTIONAL.slice(0, chunked.length)),
+    );
+    expect(chunked.length).toBeGreaterThan(100);
     expect(chunked).toEqual(Array.from(expected));
   });
 

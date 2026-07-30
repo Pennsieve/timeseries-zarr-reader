@@ -102,6 +102,20 @@ Segments are delivered on bin boundaries. A segment's `startUs` is the start of 
 bin that overlaps the window, and its data can run up to one bin past `endUs`. A window
 that overlaps no data yields a segment with empty `data`.
 
+### Filter state
+
+A filter is stateful, and the client keeps that state for its lifetime, one filter per
+(channel, filter spec, sample rate). Query consecutive windows and they are filtered as one
+continuous signal, so a trace you page through looks the same as one you fetch whole. A jump
+backwards or a gap wider than a hundred samples restarts the filter for that channel.
+
+Continuation is the one case where a segment does not start on the bin boundary above.
+Because reads snap outward, two windows that meet between samples both cover the sample at
+the seam; a filtered continuation drops that repeat and starts one sample later, so no sample
+is filtered twice. A continuation window narrower than one sample can therefore come back
+empty. Call `channelInfo()` for a channel's sample rate if you need windows that land on
+sample boundaries.
+
 `query()` rejects for unit channels; read those with `queryUnits()`.
 
 ### `queryUnits(options)`

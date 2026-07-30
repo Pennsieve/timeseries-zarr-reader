@@ -134,8 +134,8 @@ type SettledRead =
  * client's lifetime.
  *
  * Filter state also lives for the client's lifetime: queries over adjacent windows filter as
- * one continuous signal, whether or not their seam falls on a sample, and a jump or a gap
- * resets the state per channel.
+ * one continuous signal, whether or not their seam falls on a sample. A jump backwards or a
+ * gap wider than a hundred samples restarts the filter for that channel.
  *
  * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
  */

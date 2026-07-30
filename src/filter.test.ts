@@ -259,6 +259,73 @@ test("drops a first sample that repeats the previous segment's last", () => {
   expectSamplesClose(out.data, whole.slice(first.length));
 });
 
+test("keeps every sample when the next segment starts one period later", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
+
+  // A one-sample hole, not a repeat: the segment must come back whole.
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs + PERIOD_US, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expect(out.startUs).toBe(secondStartUs + PERIOD_US);
+  expect(out.data.length).toBe(second.length);
+  expectSamplesClose(out.data, whole.slice(first.length));
+});
+
+test("clears state when a segment repeats two samples", () => {
+  const { signal, first, secondStartUs } = split();
+  const overlapped = signal.subarray(first.length - 2);
+
+  // Only a single-sample repeat is dropped; anything wider is a jump back, and the
+  // caller gets the whole segment.
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs - 2 * PERIOD_US, overlapped),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expect(out.startUs).toBe(secondStartUs - 2 * PERIOD_US);
+  expect(out.data.length).toBe(overlapped.length);
+  expectSamplesClose(
+    out.data,
+    createFilter(LOWPASS, RATE_HZ).process(overlapped),
+  );
+});
+
+test("returns empty for a segment holding only the repeated sample", () => {
+  const { signal, first, secondStartUs } = split();
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment(
+      "c",
+      secondStartUs - PERIOD_US,
+      signal.subarray(first.length - 1, first.length),
+    ),
+    LOWPASS,
+    RATE_HZ,
+  );
+  expect(out.data.length).toBe(0);
+
+  // The state still stands where the first segment left it, so the next segment
+  // continues from there.
+  const next = session.apply(
+    segment("c", secondStartUs, signal.subarray(first.length)),
+    LOWPASS,
+    RATE_HZ,
+  );
+  const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
+  expectSamplesClose(next.data, whole.slice(first.length));
+});
+
 test("clears state when a segment starts before the previous one ended", () => {
   const { first, second } = split();
 

@@ -117,15 +117,13 @@ export interface FilterSession {
    *
    * State carries over from the previous segment of the same (channel, spec,
    * rate) when this segment starts within `FILTER_GAP_RESET_SAMPLES` sample
-   * periods of where that segment ended. An initial segment, a wider gap, or
-   * a jump backwards filters from a cleared state.
+   * periods of where that segment ended. An initial segment, a wider gap, or a
+   * jump backwards of more than one sample filters from a cleared state.
    *
-   * A segment whose first sample repeats the previous segment's last one is
-   * filtered from its second sample, and the returned `startUs` advances by one
-   * period. Reads snap outward to bin boundaries, so paging over windows that
-   * meet between samples delivers that repeat; dropping it keeps each sample
-   * filtered exactly once, so any paging of a window yields the values a single
-   * pass over the whole window would.
+   * A first sample repeating the previous segment's last is dropped, so the
+   * returned `startUs` advances one period and a segment holding only the repeat
+   * comes back empty. Every sample therefore reaches the filter once, whatever
+   * windows a range was read in.
    *
    * An empty segment returns empty and leaves the state unchanged.
    * Throws a RangeError for a min/max segment.
@@ -173,17 +171,23 @@ export function createFilterSession(): FilterSession {
         entry = { filter: createFilter(spec, rateHz), nextStartUs: 0 };
         entries.set(key, entry);
       } else {
-        const driftUs = segment.startUs - entry.nextStartUs;
-        const allowedUs = FILTER_GAP_RESET_SAMPLES * segment.samplePeriodUs;
-        if (driftUs === -segment.samplePeriodUs) {
+        // Measured in samples, not microseconds: a channel period is rarely a whole
+        // number of microseconds, so `startUs` carries rounding that only rounding back
+        // to samples cancels.
+        const driftSamples = Math.round(
+          (segment.startUs - entry.nextStartUs) / segment.samplePeriodUs,
+        );
+        if (driftSamples === -1) {
           alreadyFiltered = 1;
-        } else if (driftUs < 0 || driftUs > allowedUs) {
+        } else if (
+          driftSamples < 0 ||
+          driftSamples > FILTER_GAP_RESET_SAMPLES
+        ) {
           entry.filter.reset();
         }
       }
 
-      // Feeding a sample twice would corrupt the state, so the repeat is dropped
-      // rather than refiltered.
+      // The dropped sample was filtered with the previous segment.
       const data = segment.data.subarray(alreadyFiltered);
       const startUs =
         segment.startUs + alreadyFiltered * segment.samplePeriodUs;
