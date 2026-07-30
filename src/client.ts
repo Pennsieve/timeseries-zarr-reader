@@ -133,10 +133,9 @@ type SettledRead =
  * The constructor performs no I/O; the catalog is read on first use and cached for the
  * client's lifetime.
  *
- * Filter state also lives for the client's lifetime. Consecutive queries filter as one
- * continuous signal when their windows meet on the channel's sample grid; a jump, a gap, or
- * a seam that falls mid-sample resets the state for that channel, because segments are
- * delivered on bin boundaries and such a seam yields overlapping samples.
+ * Filter state also lives for the client's lifetime: queries over adjacent windows filter as
+ * one continuous signal, whether or not their seam falls on a sample, and a jump or a gap
+ * resets the state per channel.
  *
  * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
  */
@@ -172,8 +171,9 @@ export class StreamingClient {
    *
    * Segments are delivered on bin boundaries, so one may begin before `startUs` or end after
    * `endUs` by less than one of its own bins; clipping to the exact window is the caller's
-   * concern. A window with no overlap yields empty data, with `startUs` clamped to the
-   * channel's extent.
+   * concern. The exception is a filtered segment continuing from the previous query, which
+   * begins at the first sample that query did not already return. A window with no overlap
+   * yields empty data, with `startUs` clamped to the channel's extent.
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
    * unknown channel id, a unit channel, a montage pair whose rates or sample grids differ,

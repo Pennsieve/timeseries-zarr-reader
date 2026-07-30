@@ -573,6 +573,34 @@ describe("filter", () => {
     expect(Array.from(segment.data)).toEqual(pairsOf(Array.from(filtered), 8));
   });
 
+  test("filters continuously across a seam that falls between samples", async () => {
+    const client = makeClient();
+    const chunked: number[] = [];
+    for (const page of [
+      { startUs: 1_000_500, endUs: 1_005_500 },
+      { startUs: 1_005_500, endUs: 1_010_500 },
+    ]) {
+      const segment = await collectOne(
+        client.query({
+          channels: ["a"],
+          ...page,
+          pixelWidthUs: 1000,
+          raw: true,
+          filter: LOWPASS,
+        }),
+      );
+      chunked.push(...Array.from(segment.data));
+    }
+
+    // Neither window edge lands on a sample, so the two reads share the sample at
+    // 1_005_000. Each sample must still reach the filter exactly once.
+    expect(chunked).toHaveLength(11);
+    const expected = createFilter(LOWPASS, 1000).process(
+      Float64Array.from(RAW_A.slice(0, chunked.length)),
+    );
+    expect(chunked).toEqual(Array.from(expected));
+  });
+
   test("carries filter state across consecutive queries and resets on a jump back", async () => {
     const client = makeClient();
     const halves = [

@@ -239,6 +239,26 @@ test("clears state after a gap beyond the reset threshold", () => {
   expectSamplesClose(out.data, createFilter(LOWPASS, RATE_HZ).process(second));
 });
 
+test("drops a first sample that repeats the previous segment's last", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
+
+  // The second segment is backed up by one period, so it opens on the sample the
+  // first segment closed on.
+  const overlapped = signal.subarray(first.length - 1);
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs - PERIOD_US, overlapped),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expect(out.startUs).toBe(secondStartUs);
+  expect(out.data.length).toBe(second.length);
+  expectSamplesClose(out.data, whole.slice(first.length));
+});
+
 test("clears state when a segment starts before the previous one ended", () => {
   const { first, second } = split();
 

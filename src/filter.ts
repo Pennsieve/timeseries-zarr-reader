@@ -120,6 +120,13 @@ export interface FilterSession {
    * periods of where that segment ended. An initial segment, a wider gap, or
    * a jump backwards filters from a cleared state.
    *
+   * A segment whose first sample repeats the previous segment's last one is
+   * filtered from its second sample, and the returned `startUs` advances by one
+   * period. Reads snap outward to bin boundaries, so paging over windows that
+   * meet between samples delivers that repeat; dropping it keeps each sample
+   * filtered exactly once, so any paging of a window yields the values a single
+   * pass over the whole window would.
+   *
    * An empty segment returns empty and leaves the state unchanged.
    * Throws a RangeError for a min/max segment.
    */
@@ -159,6 +166,7 @@ export function createFilterSession(): FilterSession {
       // separator cannot collide with another key.
       const key = `${specKey(spec)}|${rateHz}|${segment.channel}`;
       let entry = entries.get(key);
+      let alreadyFiltered = 0;
 
       if (entry === undefined) {
         // A new filter starts cleared; no continuity check needed.
@@ -167,14 +175,20 @@ export function createFilterSession(): FilterSession {
       } else {
         const driftUs = segment.startUs - entry.nextStartUs;
         const allowedUs = FILTER_GAP_RESET_SAMPLES * segment.samplePeriodUs;
-        if (driftUs < 0 || driftUs > allowedUs) {
+        if (driftUs === -segment.samplePeriodUs) {
+          alreadyFiltered = 1;
+        } else if (driftUs < 0 || driftUs > allowedUs) {
           entry.filter.reset();
         }
       }
 
-      entry.nextStartUs =
-        segment.startUs + segment.data.length * segment.samplePeriodUs;
-      return { ...segment, data: entry.filter.process(segment.data) };
+      // Feeding a sample twice would corrupt the state, so the repeat is dropped
+      // rather than refiltered.
+      const data = segment.data.subarray(alreadyFiltered);
+      const startUs =
+        segment.startUs + alreadyFiltered * segment.samplePeriodUs;
+      entry.nextStartUs = startUs + data.length * segment.samplePeriodUs;
+      return { ...segment, startUs, data: entry.filter.process(data) };
     },
 
     clear() {
