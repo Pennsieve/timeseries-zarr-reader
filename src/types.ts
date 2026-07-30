@@ -84,11 +84,11 @@ export type FilterSpec =
     };
 
 /**
- * Unit/spike output for one channel over a query window.
+ * Every event of one unit channel within a query window, with their waveforms.
  *
  * Timestamps are UTC microseconds; waveform samples are physical units.
  */
-export interface Event {
+export interface EventBatch {
   /** Channel id the events belong to. */
   readonly channel: string;
   /** Query-window start. */
@@ -99,9 +99,9 @@ export interface Event {
   readonly samplePeriodUs: number;
   /** Samples per spike waveform. 0 when waveforms were not fetched. */
   readonly pointsPerEvent: number;
-  /** True when the waveforms were resampled to fit the pixel budget. */
+  /** True when the waveforms were resampled. Always false: waveforms are returned as stored. */
   readonly isResampled: boolean;
-  /** Event timestamps within the window, ascending. */
+  /** Timestamps of the events, ascending. */
   readonly times: Float64Array;
   /**
    * Waveform samples, one row of `pointsPerEvent` values per event, flattened

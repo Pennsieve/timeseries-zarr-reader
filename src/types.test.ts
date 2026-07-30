@@ -2,7 +2,7 @@ import { expect, expectTypeOf, test } from "vitest";
 import type {
   ByteRange,
   ChannelInfo,
-  Event,
+  EventBatch,
   FilterSpec,
   MontagePair,
   Segment,
@@ -63,8 +63,8 @@ test("FilterSpec discriminates cutoff fields by type", () => {
   >();
 });
 
-test("Event has the documented shape", () => {
-  const ev: Event = {
+test("EventBatch has the documented shape", () => {
+  const ev: EventBatch = {
     channel: "unit-3",
     startUs: 0,
     endUs: 1_000_000,

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import type { UnitArrays } from "./catalog.js";
+import type { Store } from "./types.js";
 import { bundleFiles, createMemoryStore } from "./test-utils.js";
 import type { TimestampReader } from "./zarr.js";
 import {
@@ -105,6 +106,37 @@ test("fetches the matching waveform rows when the waveform spans enough pixels",
 
   expect(event.pointsPerEvent).toBe(3);
   expect(Array.from(event.data)).toEqual([4, 5, 6, 7, 8, 9]);
+});
+
+test("searches for both window bounds concurrently", async () => {
+  const eventsChunk = "/5/events/c/0";
+  let inFlight = 0;
+  let peakInFlight = 0;
+  const tracked: Store = {
+    ...store,
+    get: async (key, opts) => {
+      if (key !== eventsChunk) {
+        return store.get(key, opts);
+      }
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      try {
+        return await store.get(key, opts);
+      } finally {
+        inFlight--;
+      }
+    },
+  };
+
+  const event = await queryUnitChannel(tracked, "u", UNIT, {
+    startUs: 1_003_000,
+    endUs: 1_009_000,
+    pixelWidthUs: 1000,
+  });
+
+  // Two timestamp reads in flight at once can only come from overlapping searches.
+  expect(peakInFlight).toBe(2);
+  expect(Array.from(event.times)).toEqual([1_005_000, 1_005_500]);
 });
 
 test("returns no events and no waveforms for an empty window", async () => {

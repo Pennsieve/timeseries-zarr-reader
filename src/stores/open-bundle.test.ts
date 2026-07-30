@@ -26,6 +26,11 @@ test("opens an absolute path with the filesystem store", async () => {
   expect(store).toBeInstanceOf(FileStore);
 });
 
+test("opens a Windows drive-letter path with the filesystem store", async () => {
+  expect(await openBundle("C:\\data\\bundle.zarr")).toBeInstanceOf(FileStore);
+  expect(await openBundle("d:/data/bundle.zarr")).toBeInstanceOf(FileStore);
+});
+
 test("opens a file:// URL with the filesystem store, decoding the path", async () => {
   const spaced = await mkdtemp(join(tmpdir(), "reader with space-"));
   try {

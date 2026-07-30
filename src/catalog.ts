@@ -125,8 +125,7 @@ export function selectLevel<T extends { periodUs: number }>(
  *
  * `start` is the first overlapped bin; `end` is one past the last. Both are clamped to
  * `[0, grid.binCount]`. A bin that partially overlaps the window is included; a bin
- * starting exactly at the exclusive `endUs` is not. The inclusion rule matches
- * `trimToBounds`.
+ * starting exactly at the exclusive `endUs` is not.
  *
  * `grid.startUs` is the absolute time of bin 0.
  *

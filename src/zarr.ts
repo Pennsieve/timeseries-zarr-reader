@@ -27,6 +27,24 @@ async function openArray(
 }
 
 /**
+ * Rejects an array whose dtype is neither float32 nor float64.
+ *
+ * `role` names the array's part in the message. An int64 array otherwise fails mid-read,
+ * on a bigint conversion that names neither the array nor its dtype.
+ */
+function requireFloatDtype(
+  array: Awaited<ReturnType<typeof openArray>>,
+  role: string,
+  path: `/${string}`,
+): void {
+  if (!array.is("float32") && !array.is("float64")) {
+    throw new Error(
+      `${role} ${path} must be float32 or float64 (got ${array.dtype})`,
+    );
+  }
+}
+
+/**
  * Reads a level's bins over a half-open index range.
  *
  * The range is not clamped; derive it with {@link binRange}. An empty range returns
@@ -34,7 +52,8 @@ async function openArray(
  * interleaved `[min, max, ...]` pairs. Stored float32 samples widen to `Float64Array`.
  * `opts.signal` is forwarded to the store.
  *
- * Throws when no array exists at `path` or its shape is neither `[n]` nor `[n, 2]`.
+ * Throws when no array exists at `path`, its shape is neither `[n]` nor `[n, 2]`, or
+ * its dtype is neither float32 nor float64.
  */
 export async function readBins(
   store: Store,
@@ -47,6 +66,8 @@ export async function readBins(
   }
 
   const array = await openArray(store, path, opts);
+  requireFloatDtype(array, "level", path);
+
   const bins = slice(range.start, range.end);
   const rank = array.shape.length;
   if (rank === 1) {
@@ -124,7 +145,8 @@ export async function openTimestamps(
  * Rows are returned flattened row-major, `rowLength` values per row, widened to
  * `Float64Array`. An empty range returns empty data and the row length.
  *
- * Throws when no array exists at `path` or it is not rank 2.
+ * Throws when no array exists at `path`, it is not rank 2, or its dtype is neither
+ * float32 nor float64.
  */
 export async function readRows(
   store: Store,
@@ -138,12 +160,12 @@ export async function readRows(
       `row array ${path} must be rank 2 (got shape ${JSON.stringify(array.shape)})`,
     );
   }
+  requireFloatDtype(array, "row array", path);
 
   const rowLength = array.shape[1]!;
   if (range.end <= range.start) {
     return { data: new Float64Array(0), rowLength };
   }
   const region = await get(array, [slice(range.start, range.end), null], opts);
-  // Bundles store rows as float32. The dtype is not validated.
-  return { data: Float64Array.from(region.data as Float32Array), rowLength };
+  return { data: Float64Array.from(region.data), rowLength };
 }

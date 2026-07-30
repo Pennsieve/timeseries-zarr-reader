@@ -5,7 +5,10 @@ import type { Store } from "../types.js";
 export { FetchStore };
 
 const SUPPORTED_LOCATIONS =
-  'http(s):// URLs, file:// URLs, and absolute filesystem paths starting with "/"';
+  'http(s):// URLs, file:// URLs, and absolute filesystem paths ("/bundle.zarr", "C:\\bundle.zarr")';
+
+/** Matches a Windows drive-letter absolute path, which URL parsing reads as a one-letter scheme. */
+const DRIVE_LETTER_PATH = /^[A-Za-z]:[\\/]/;
 
 /** Constructs the filesystem store, importing its module on first use. */
 async function loadFileStore(path: string): Promise<Store> {
@@ -14,17 +17,17 @@ async function loadFileStore(path: string): Promise<Store> {
 }
 
 /**
- * Returns a `Store` for a bundle location, chosen by URL scheme.
+ * Returns a `Store` for a bundle location, chosen by its scheme or path form.
  *
- * `http://` and `https://` URLs use `FetchStore`; `file://` URLs and absolute filesystem
- * paths use `FileStore`, imported dynamically to keep `node:fs` out of browser bundles.
- * Relative paths and unrecognized schemes throw.
+ * `http://` and `https://` URLs use `FetchStore`. `file://` URLs and absolute filesystem
+ * paths, POSIX or Windows drive-letter, use `FileStore`, imported dynamically to keep
+ * `node:fs` out of browser bundles. Relative paths and unrecognized schemes throw.
  *
  * A store that needs credentials must be constructed by the consumer and passed as a `Store`
  * directly. Every store must implement `getRange`; bundle arrays are sharded.
  */
 export async function openBundle(url: string): Promise<Store> {
-  if (url.startsWith("/")) {
+  if (url.startsWith("/") || DRIVE_LETTER_PATH.test(url)) {
     return loadFileStore(url);
   }
 

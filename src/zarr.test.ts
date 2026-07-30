@@ -3,18 +3,22 @@ import {
   arrayMetadata,
   createMemoryStore,
   float32Chunk,
+  float64Chunk,
   int64Chunk,
 } from "./test-utils.js";
 import { openTimestamps, readBins, readRows } from "./zarr.js";
 
 /**
- * A store of unsharded arrays: a raw level split across two chunks, an envelope level, a
- * rank-3 array, malformed metadata, int64 timestamp arrays, and a rank-2 row array.
+ * A store of unsharded arrays: a raw level split across two chunks, an envelope level, an
+ * int64 level, a rank-3 array, malformed metadata, int64 timestamp arrays, and rank-2 row
+ * arrays in float32, float64, and int64.
  */
 const store = createMemoryStore({
   "/raw/zarr.json": arrayMetadata([6], [3], { period_us: 1000 }),
   "/raw/c/0": float32Chunk([1, 2, 3]),
   "/raw/c/1": float32Chunk([4, 5, 6]),
+  "/rawint/zarr.json": arrayMetadata([3], [3], { period_us: 1000 }, "int64"),
+  "/rawint/c/0": int64Chunk([1, 2, 3]),
   "/env/zarr.json": arrayMetadata([3, 2], [3, 2], { period_us: 4000 }),
   "/env/c/0/0": float32Chunk([10, 11, 20, 21, 30, 31]),
   "/rank3/zarr.json": arrayMetadata([2, 2, 2]),
@@ -26,6 +30,10 @@ const store = createMemoryStore({
   "/huge/c/0": int64Chunk([1n << 60n]),
   "/waveforms/zarr.json": arrayMetadata([4, 3]),
   "/waveforms/c/0/0": float32Chunk([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+  "/rows64/zarr.json": arrayMetadata([2, 3], [2, 3], {}, "float64"),
+  "/rows64/c/0/0": float64Chunk([1.5, 2.5, 3.5, 4.5, 5.5, 6.5]),
+  "/rowsint/zarr.json": arrayMetadata([2, 3], [2, 3], {}, "int64"),
+  "/rowsint/c/0/0": int64Chunk([1, 2, 3, 4, 5, 6]),
 });
 
 test("reads a raw level's samples as float64, crossing chunk boundaries", async () => {
@@ -67,6 +75,12 @@ test("rejects a level whose shape is neither raw nor min/max", async () => {
   await expect(readBins(store, "/rank3", { start: 0, end: 1 })).rejects.toThrow(
     /shape/,
   );
+});
+
+test("rejects a level whose dtype is not float32 or float64", async () => {
+  await expect(
+    readBins(store, "/rawint", { start: 0, end: 3 }),
+  ).rejects.toThrow(/level \/rawint must be float32 or float64 \(got int64\)/);
 });
 
 test("reads int64 timestamps as microsecond numbers", async () => {
@@ -114,8 +128,23 @@ test("returns empty rows and the row length for an empty range", async () => {
   expect(rowLength).toBe(3);
 });
 
+test("reads float64 rows without conversion loss", async () => {
+  const { data, rowLength } = await readRows(store, "/rows64", {
+    start: 0,
+    end: 2,
+  });
+  expect(rowLength).toBe(3);
+  expect(Array.from(data)).toEqual([1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+});
+
 test("rejects a row array that is not rank 2", async () => {
   await expect(readRows(store, "/raw", { start: 0, end: 1 })).rejects.toThrow(
     /rank 2/,
   );
+});
+
+test("rejects a row array whose dtype is not float32 or float64", async () => {
+  await expect(
+    readRows(store, "/rowsint", { start: 0, end: 1 }),
+  ).rejects.toThrow(/must be float32 or float64 \(got int64\)/);
 });

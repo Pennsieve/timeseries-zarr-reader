@@ -1,11 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { FixtureChannel } from "./test-utils.js";
-import {
-  bundleMetadata,
-  createMemoryStore,
-  makeSegment,
-} from "./test-utils.js";
-import { trimToBounds } from "./trim.js";
+import { bundleMetadata, createMemoryStore } from "./test-utils.js";
 import {
   binRange,
   readCatalog,
@@ -231,31 +226,51 @@ describe("binRange", () => {
     );
   });
 
-  test("selects the same bins as trimToBounds", () => {
-    const windows: Array<[number, number]> = [
-      [at(2), at(5)],
-      [at(1) + 500, at(3) + 500],
-      [at(0), at(3)],
-      [0, at(50)],
-      [at(20), at(30)],
+  test("anchors bins to a grid whose start is not a multiple of its period", () => {
+    const offGrid = { startUs: 1_000_123, periodUs: 1000, binCount: 10 };
+    const windows: Array<{
+      windowStartUs: number;
+      windowEndUs: number;
+      range: { start: number; end: number };
+      /** Absolute time of the first returned bin. */
+      startBinUs: number;
+    }> = [
+      // Both edges on the grid's own bin boundaries.
+      {
+        windowStartUs: 1_002_123,
+        windowEndUs: 1_005_123,
+        range: { start: 2, end: 5 },
+        startBinUs: 1_002_123,
+      },
+      // Whole-millisecond edges, which fall mid-bin on this grid.
+      {
+        windowStartUs: 1_002_000,
+        windowEndUs: 1_005_000,
+        range: { start: 1, end: 5 },
+        startBinUs: 1_001_123,
+      },
+      // Starts more than one period before the grid.
+      {
+        windowStartUs: 998_000,
+        windowEndUs: 1_000_500,
+        range: { start: 0, end: 1 },
+        startBinUs: 1_000_123,
+      },
+      // Narrower than one bin, inside a bin.
+      {
+        windowStartUs: 1_004_500,
+        windowEndUs: 1_004_600,
+        range: { start: 4, end: 5 },
+        startBinUs: 1_004_123,
+      },
     ];
 
-    for (const [windowStartUs, windowEndUs] of windows) {
-      const { start, end } = binRange(grid, windowStartUs, windowEndUs);
-      const trimmed = trimToBounds(
-        makeSegment({
-          startUs: grid.startUs,
-          samplePeriodUs: grid.periodUs,
-          data: new Float64Array(grid.binCount),
-        }),
-        windowStartUs,
-        windowEndUs,
+    for (const { windowStartUs, windowEndUs, range, startBinUs } of windows) {
+      const returned = binRange(offGrid, windowStartUs, windowEndUs);
+      expect(returned).toEqual(range);
+      expect(offGrid.startUs + returned.start * offGrid.periodUs).toBe(
+        startBinUs,
       );
-
-      expect(trimmed.data.length).toBe(end - start);
-      if (end > start) {
-        expect(trimmed.startUs).toBe(grid.startUs + start * grid.periodUs);
-      }
     }
   });
 });

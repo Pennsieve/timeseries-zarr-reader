@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/stores/file.d.ts",
+      "default": "./dist/stores/file.js"
     }
   },
   "scripts": {
@@ -15,8 +19,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint --fix . && prettier --write .",
     "format:check": "prettier --check .",
-    "check": "eslint . && prettier --check . && tsc --noEmit && vitest run && tsc -p tsconfig.build.json",
-    "build": "tsc -p tsconfig.build.json"
+    "check": "eslint . && prettier --check . && tsc --noEmit && vitest run && pnpm build",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

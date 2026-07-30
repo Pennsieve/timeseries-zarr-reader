@@ -1,6 +1,6 @@
 import { MIN_WAVEFORM_PIXELS } from "./constants.js";
 import type { UnitArrays } from "./catalog.js";
-import type { Event, Store, StoreOptions } from "./types.js";
+import type { EventBatch, Store, StoreOptions } from "./types.js";
 import type { TimestampReader } from "./zarr.js";
 import { openTimestamps, readRows } from "./zarr.js";
 
@@ -58,10 +58,13 @@ export async function queryUnitChannel(
   unit: UnitArrays,
   window: { startUs: number; endUs: number; pixelWidthUs: number },
   opts?: StoreOptions,
-): Promise<Event> {
+): Promise<EventBatch> {
   const events = await openTimestamps(store, unit.events.path, opts);
-  const start = await firstIndexAtOrAfter(events, window.startUs);
-  const end = await firstIndexAtOrAfter(events, window.endUs);
+  // The two bounds are independent, and each search costs log2(n) round trips.
+  const [start, end] = await Promise.all([
+    firstIndexAtOrAfter(events, window.startUs),
+    firstIndexAtOrAfter(events, window.endUs),
+  ]);
   const times = await events.read(start, end);
 
   const { pointsPerEvent, periodUs } = unit.waveforms;

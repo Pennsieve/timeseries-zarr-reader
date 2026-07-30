@@ -4,19 +4,24 @@ A TypeScript library that reads pyramid Zarr v3 bundles of electrophysiological
 time-series data in the browser or Node.js. It produces per-channel segments sized for
 canvas rendering and has no framework dependencies.
 
-The library consumes a Zarr `Store` and yields `Segment` and `Event` async iterables.
-Level selection, min/max resampling to the pixel grid, bipolar montages, Butterworth
-filtering, and spike reads all run client-side; the server only needs to serve bytes
-with HTTP `Range` support. The on-disk bundle format is defined in and produced by
-[`ts-zarr-py`](https://github.com/Pennsieve/ts-zarr-py).
+The library consumes a Zarr `Store` and yields `Segment` and `EventBatch` async
+iterables. Level selection, min/max resampling to the pixel grid, bipolar montages,
+Butterworth filtering, and spike reads all run client-side; the server only needs to
+serve bytes with HTTP `Range` support. The on-disk bundle format is defined in and
+produced by [`ts-zarr-py`](https://github.com/Pennsieve/ts-zarr-py).
 
 ## Installation
+
+The package is not published yet. Once it is, install it with:
 
 ```sh
 pnpm add @pennsieve/timeseries-zarr-reader
 # or
 npm install @pennsieve/timeseries-zarr-reader
 ```
+
+Until then, consume it from a local checkout (`pnpm build`, then a `link:` or `file:`
+dependency).
 
 ## Quick start
 
@@ -30,13 +35,15 @@ const client = new StreamingClient({
 // query() reads continuous channels; unit channels are read with queryUnits().
 const channels = await client.channelInfo();
 const continuous = channels.filter((c) => c.kind === "continuous");
+const [firstChannel] = continuous;
+if (!firstChannel) throw new Error("bundle has no continuous channels");
 
 // One Segment per channel: raw samples, or interleaved [min, max, ...]
 // envelope pairs when the zoom level calls for decimated output.
 for await (const segment of client.query({
   channels: continuous.map((c) => c.id),
-  startUs: continuous[0].startUs,
-  endUs: continuous[0].startUs + 60_000_000, // 60 s window
+  startUs: firstChannel.startUs,
+  endUs: firstChannel.startUs + 60_000_000, // 60 s window
   pixelWidthUs: 50_000, // 60 s across 1200 pixels
 })) {
   draw(segment);
@@ -52,56 +59,89 @@ UTC microseconds. Sample values stay in each channel's physical unit, as recorde
 
 ### `new StreamingClient(options)`
 
-Takes `{ store, filterMaxBytes? }`. `store` is any object that implements the `Store`
-type. `filterMaxBytes` sets the default byte cap for raw-level reads (default 15 MB).
+Takes `{ store, maxRawBytes? }`. `store` is any object that implements the `Store` type.
+`maxRawBytes` sets the default byte cap for raw-level reads (default 15 MB); each query
+can override it.
 
 ### `channelInfo()`
 
 Returns a `ChannelInfo` array with `id`, `name`, `unit`, `rateHz`, `startUs`, `endUs`,
 and `kind` (`"continuous"` or `"unit"`) for every channel in the bundle.
 
-### `query(params)`
+### `query(options)`
 
 Returns an async iterable of `Segment`, one per requested trace, in request order.
-Required params: `channels`, `startUs`, `endUs`, and `pixelWidthUs`. Options:
+Required options: `startUs`, `endUs`, and `pixelWidthUs`. Pass either `channels` or
+`montage` to name the traces, not both:
 
+- `channels`: channel ids to read, one trace each.
 - `montage`: `{ lead, secondary }` pairs. Each rendered trace is `lead - secondary`,
-  sample by sample. When present, the pairs replace `channels` as the query's traces.
+  sample by sample.
+
+Supplying both, or neither, throws. The remaining options are:
+
 - `filter`: a Butterworth `FilterSpec` (`lowpass`, `highpass`, `bandpass`, or
   `bandstop`) applied to every trace.
-- `minMax`: set to `false` to receive raw samples with no decimation or resampling.
-- `filterMaxBytes`: byte-cap override for this query.
+- `raw`: set to `true` to receive raw samples with no decimation or resampling
+  (default `false`).
+- `maxRawBytes`: byte-cap override for this query.
 - `signal`: an `AbortSignal` that cancels in-flight reads.
 
-The reader picks the coarsest pyramid level whose bins fit within one pixel. A montage,
-a filter, or `minMax: false` forces a read of the raw level. If a forced-raw read would
-exceed the byte cap, `query()` throws `FilterWindowTooWide` before fetching anything;
-the error carries `requestedBytes` and `maxBytes`. Narrow the window or pass a larger
-`filterMaxBytes` to proceed.
+The reader picks the coarsest pyramid level whose bins fit within one pixel. A montage, a
+filter, or `raw: true` forces a read of the raw level. Raw reads are capped by
+`maxRawBytes`, counted as the uncompressed size of the samples requested and summed across
+traces (both sides of a montage pair count). If a raw read would exceed the cap, the query
+rejects with `RawReadTooLargeError` before fetching anything; the error carries
+`requestedBytes` and `maxBytes`. Narrow the window or pass a larger `maxRawBytes` to
+proceed.
 
-`query()` throws for unit channels; read those with `queryUnits()`.
+Because `query()` is an async generator, it validates on the first iteration rather than on
+the call, so wrap the `for await` loop in `try`/`catch` rather than the call itself.
 
-### `queryUnits(params)`
+Segments are delivered on bin boundaries. A segment's `startUs` is the start of the first
+bin that overlaps the window, and its data can run up to one bin past `endUs`. A window
+that overlaps no data yields a segment with empty `data`.
 
-Returns an async iterable of `Event`, one per requested unit channel. Each event batch
+`query()` rejects for unit channels; read those with `queryUnits()`.
+
+### `queryUnits(options)`
+
+Returns an async iterable of `EventBatch`, one per requested unit channel. Takes
+`channels`, `startUs`, `endUs`, `pixelWidthUs`, and an optional `signal`. Each batch
 holds ascending timestamps within the window. Waveform samples (`pointsPerEvent` values
-per event, row-major) are included only when the zoom level gives one waveform more
-than ten pixels of width.
+per event, row-major) are included only when the zoom level gives one waveform more than
+ten pixels of width; otherwise `pointsPerEvent` is 0 and `data` is empty.
 
-### `getSegmentSpans(params)`
+### `dataSpans(options)`
 
-Returns `[startUs, endUs)` spans where one continuous channel has data, clamped to the
-window. Spans come from the coarsest pyramid level, so their edges are as coarse as
-that level's bins. Gaps no wider than `gapThresholdUs` are bridged into one span.
+Returns a promise for the `[startUs, endUs)` spans where one continuous channel has data,
+clamped to the window. Takes `channel`, `startUs`, `endUs`, an optional
+`gapThresholdUs`, and an optional `signal`. Spans come from the coarsest pyramid level,
+so their edges are as coarse as that level's bins. Gaps no wider than `gapThresholdUs`
+are bridged into one span; the default of 0 splits on every gap.
 
 ### `openBundle(url)` and stores
 
 The reader performs no network or filesystem I/O of its own; all reads go through a
-`Store`. `openBundle(url)` picks a built-in store by scheme:
+`Store`. `openBundle(url)` picks a built-in store by scheme or path form:
 
 - `http://` and `https://` URLs get `FetchStore`, which is also exported.
-- `file://` URLs and absolute paths get a filesystem store. That store is imported
-  lazily and is not included in browser bundles.
+- `file://` URLs and absolute paths, POSIX (`/bundle.zarr`) or Windows drive-letter
+  (`C:\bundle.zarr`), get the filesystem store. It is imported lazily and is not included
+  in browser bundles.
+- Relative paths and any other scheme throw.
+
+`FileStore` is also available on its own, from the `./node` subpath export, which keeps
+`node:fs` out of browser bundles:
+
+```ts
+import { StreamingClient } from "@pennsieve/timeseries-zarr-reader";
+import { FileStore } from "@pennsieve/timeseries-zarr-reader/node";
+
+const client = new StreamingClient({
+  store: new FileStore("/data/recording.zarr"),
+});
+```
 
 ### Custom stores
 
@@ -142,7 +182,8 @@ pnpm lint          # eslint --fix + prettier --write (rewrites files)
 pnpm format:check  # prettier --check (read-only)
 ```
 
-Tests are co-located as `src/<module>.test.ts`. Acceptance tests read
-`test-data/sample.zarr`, a small committed bundle produced by the real writer.
-`scripts/generate-test-bundle.py` documents the bundle's exact contents and regenerates
-it from a [`ts-zarr-py`](https://github.com/Pennsieve/ts-zarr-py) checkout.
+`src/index.ts` is the public barrel; `src/client.ts` holds `StreamingClient`. Tests are
+co-located as `src/<module>.test.ts`. Acceptance tests read `test-data/sample.zarr`, a
+small committed bundle produced by the real writer. `scripts/generate-test-bundle.py`
+documents the bundle's exact contents and regenerates it from a
+[`ts-zarr-py`](https://github.com/Pennsieve/ts-zarr-py) checkout.

@@ -94,7 +94,7 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
   const window = { startUs: info.startUs, endUs: info.startUs + 10_000_000 };
 
   for (const params of [
-    { pixelWidthUs: 1000, minMax: false }, // raw
+    { pixelWidthUs: 1000, raw: true },
     { pixelWidthUs: 50_000 }, // pyramid + resample
   ]) {
     const query = { channels: [info.id], ...window, ...params };
@@ -107,7 +107,5 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
   }
 
   const spans = { channel: info.id, ...window };
-  expect(await remote.getSegmentSpans(spans)).toEqual(
-    await local.getSegmentSpans(spans),
-  );
+  expect(await remote.dataSpans(spans)).toEqual(await local.dataSpans(spans));
 });

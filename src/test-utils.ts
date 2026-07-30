@@ -77,6 +77,16 @@ export function float32Chunk(values: number[]): Uint8Array {
   return bytes;
 }
 
+/** Encodes values as one chunk of little-endian float64 bytes. */
+export function float64Chunk(values: number[]): Uint8Array {
+  const bytes = new Uint8Array(values.length * 8);
+  const view = new DataView(bytes.buffer);
+  values.forEach((value, index) => {
+    view.setFloat64(index * 8, value, true);
+  });
+  return bytes;
+}
+
 /** Encodes values as one chunk of little-endian int64 bytes. Accepts bigint for values beyond Number's safe range. */
 export function int64Chunk(values: Array<number | bigint>): Uint8Array {
   const bytes = new Uint8Array(values.length * 8);
