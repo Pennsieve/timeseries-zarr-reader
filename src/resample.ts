@@ -3,12 +3,12 @@ import type { Segment } from "./types.js";
 /**
  * Resamples a segment to one [min, max] pair per output pixel.
  *
- * Buckets are `pixelWidthUs` wide, anchored at the segment's `startUs`. Raw input
- * reduces the samples in each bucket; envelope input merges pairs (smallest min,
- * largest max). A trailing partial bucket is kept. Empty input yields empty data.
+ * Buckets are `pixelWidthUs` wide, anchored at the segment's `startUs`. Raw input is
+ * reduced to the min and max of each bucket; envelope input merges pairs (smallest
+ * min, largest max). A trailing partial bucket is kept. Empty input yields empty data.
  *
- * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN],
- * preserving the gap.
+ * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN]: a
+ * gap in the input stays a gap in the output.
  *
  * The result is envelope data: `isMinMax` is true and `samplePeriodUs` becomes
  * `pixelWidthUs`. Throws RangeError when `pixelWidthUs < samplePeriodUs`.
@@ -32,7 +32,7 @@ export function resampleToPixels(
   const out = new Float64Array(pixelCount * 2);
 
   // pixelWidthUs >= samplePeriodUs, so bins never skip a pixel: one forward scan fills
-  // the output. Envelope pairs fold into the same min/max accumulators as raw samples.
+  // the output.
   let bin = 0;
   for (let pixel = 0; pixel < pixelCount; pixel++) {
     let min = Infinity;
@@ -51,7 +51,6 @@ export function resampleToPixels(
       }
       bin++;
     }
-    // No finite values in this pixel: emit NaN to preserve the gap.
     const isGap = min === Infinity;
     out[pixel * 2] = isGap ? NaN : min;
     out[pixel * 2 + 1] = isGap ? NaN : max;

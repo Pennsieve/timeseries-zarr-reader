@@ -7,8 +7,8 @@ import { openTimestamps, readRows } from "./zarr.js";
 /**
  * Reports whether spike waveforms should be fetched at a display resolution.
  *
- * Returns true when one waveform's duration spans more than
- * {@link MIN_WAVEFORM_PIXELS} pixels of `pixelWidthUs` each.
+ * Returns true when one waveform spans more than {@link MIN_WAVEFORM_PIXELS}
+ * pixels, each `pixelWidthUs` wide.
  */
 export function shouldFetchWaveforms(
   pixelWidthUs: number,

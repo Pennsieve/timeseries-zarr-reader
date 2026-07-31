@@ -29,8 +29,7 @@ async function openArray(
 /**
  * Rejects an array whose dtype is neither float32 nor float64.
  *
- * `role` names the array's part in the message. An int64 array otherwise fails mid-read,
- * on a bigint conversion that names neither the array nor its dtype.
+ * `role` names the array's part in the message.
  */
 function requireFloatDtype(
   array: Awaited<ReturnType<typeof openArray>>,

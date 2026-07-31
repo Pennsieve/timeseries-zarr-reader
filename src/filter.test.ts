@@ -243,8 +243,8 @@ test("drops a first sample that repeats the previous segment's last", () => {
   const { signal, first, second, secondStartUs } = split();
   const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
 
-  // The second segment is backed up by one period, so it opens on the sample the
-  // first segment closed on.
+  // The second segment starts one period earlier, repeating the first segment's last
+  // sample.
   const overlapped = signal.subarray(first.length - 1);
   const session = createFilterSession();
   session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
@@ -315,8 +315,7 @@ test("returns empty for a segment holding only the repeated sample", () => {
   );
   expect(out.data.length).toBe(0);
 
-  // The state still stands where the first segment left it, so the next segment
-  // continues from there.
+  // The state is unchanged, so the next segment continues from the first.
   const next = session.apply(
     segment("c", secondStartUs, signal.subarray(first.length)),
     LOWPASS,

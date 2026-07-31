@@ -13,8 +13,8 @@ export interface Level0Geometry {
  * `start_us` -> `startUs`. Unrecognized attributes are ignored.
  *
  * For a continuous channel, `endUs` is the exclusive end derived from `level0`: one period
- * past the last sample. For a unit channel, `endUs` equals `startUs`; its true extent is the
- * last event's timestamp, available only from the `events` array.
+ * past the last sample. For a unit channel, `endUs` equals `startUs`; only the `events`
+ * array carries the time of its last event.
  *
  * Throws a TypeError for a missing or wrong-typed attribute, an unrecognized `kind`, or a
  * continuous channel without `level0`. Throws a RangeError for a `rate_hz` that is not

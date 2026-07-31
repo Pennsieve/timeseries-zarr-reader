@@ -1,6 +1,5 @@
 /**
- * A contiguous run of one trace's data over a queried window, ready for canvas
- * rendering.
+ * A contiguous run of one trace's data over a queried window.
  *
  * Timestamps are UTC microseconds. Values are in physical units; the reader
  * never flips signs.
@@ -38,7 +37,7 @@ export interface ChannelInfo {
   readonly rateHz: number;
   /** Time of the channel's first sample. */
   readonly startUs: number;
-  /** Exclusive end of the channel's data: the time just past its last sample. */
+  /** Exclusive end of the channel's data: one sample period past the last sample. */
   readonly endUs: number;
   /** "continuous" for a sampled waveform; "unit" for a discrete event channel. */
   readonly kind: "continuous" | "unit";
@@ -54,10 +53,9 @@ export interface MontagePair {
 }
 
 /**
- * A Butterworth filter request. Frequencies are in hertz; `order` is the
- * filter order. The `type` discriminant fixes which cutoff fields apply:
- * lowpass and highpass take `cutoffHz`; bandpass and bandstop take a
- * `lowHz`/`highHz` band.
+ * A Butterworth filter request. Frequencies are in hertz. The `type`
+ * discriminant fixes which cutoff fields apply: lowpass and highpass take
+ * `cutoffHz`; bandpass and bandstop take a `lowHz`/`highHz` band.
  */
 export type FilterSpec =
   | {
@@ -84,7 +82,8 @@ export type FilterSpec =
     };
 
 /**
- * Every event of one unit channel within a query window, with their waveforms.
+ * One unit channel's events within a query window, with their waveforms when
+ * those were fetched.
  *
  * Timestamps are UTC microseconds; waveform samples are physical units.
  */

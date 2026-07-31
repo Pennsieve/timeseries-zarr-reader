@@ -1,7 +1,7 @@
 import type { ChannelInfo } from "./types.js";
 
 /**
- * Subtracts `secondary` from `lead` element-wise: `out[i] = lead[i] - secondary[i]`.
+ * Subtracts `secondary` from `lead`, sample by sample.
  *
  * Values stay in physical units; no sign flip. NaN in either input propagates.
  * Neither input is modified. Throws RangeError when the lengths differ.

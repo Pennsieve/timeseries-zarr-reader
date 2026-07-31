@@ -16,8 +16,7 @@ function isMissing(error: unknown): boolean {
 /**
  * A `Store` over a bundle directory on disk.
  *
- * Node-only (`node:fs`); must not be reachable from a browser entry point. Intended for CI
- * fixtures, offline development, and local inspection.
+ * Node-only: it imports `node:fs`. Reachable from the `./node` subpath export.
  *
  * Keys resolve beneath `root`; a key that resolves outside `root` throws. A ranged read seeks
  * and reads only the requested bytes. Nothing is cached or held open between reads.

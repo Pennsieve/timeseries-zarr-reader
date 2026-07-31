@@ -31,8 +31,7 @@ const BYTES_PER_RAW_SAMPLE = 4;
  * Thrown when a forced-raw read would exceed the byte cap.
  *
  * Raised before any data is fetched. `requestedBytes` is the size the read would have
- * fetched; `maxBytes` is the cap in effect. Retry with a narrower window or a higher
- * `maxRawBytes`.
+ * fetched; `maxBytes` is the cap in effect.
  */
 export class RawReadTooLargeError extends Error {
   readonly requestedBytes: number;
@@ -68,8 +67,8 @@ export interface QueryOptions {
   /** Time one pixel column covers. Drives level selection and the final resample. */
   readonly pixelWidthUs: number;
   /**
-   * Returns raw samples with no decimation or resampling. Defaults to false. Forces a read
-   * of the raw level, subject to the byte cap.
+   * When true, the query returns raw samples with no decimation or resampling. Defaults to
+   * false. Forces a read of the raw level, subject to the byte cap.
    */
   readonly raw?: boolean;
   /** Bipolar pairs to render, in place of `channels`. Each pair is one trace. */
@@ -169,16 +168,16 @@ export class StreamingClient {
    * set, output is resampled onto the pixel grid when one pixel spans more than three
    * source bins.
    *
-   * Segments are delivered on bin boundaries, so one may begin before `startUs` or end after
-   * `endUs` by less than one of its own bins; clipping to the exact window is the caller's
+   * Segments are delivered on bin boundaries: one may begin before `startUs` or end after
+   * `endUs` by less than one of its own bins. Clipping to the exact window is the caller's
    * concern. The exception is a filtered segment continuing from the previous query, which
-   * begins at the first sample that query did not already return. A window with no overlap
-   * yields empty data, with `startUs` clamped to the channel's extent.
+   * begins at the first sample that query did not return. A window with no overlap yields
+   * empty data, with `startUs` clamped to the channel's extent.
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
    * unknown channel id, a unit channel, a montage pair whose rates or sample grids differ,
-   * a non-positive `pixelWidthUs`, or an `endUs` before `startUs`. Being a generator, it
-   * reports these on the first iteration rather than on the call.
+   * a non-positive `pixelWidthUs`, or an `endUs` before `startUs`. A generator reports
+   * these on the first iteration, not on the call.
    */
   async *query(params: QueryOptions): AsyncGenerator<Segment, void, undefined> {
     params.signal?.throwIfAborted();
@@ -420,12 +419,7 @@ function requirePixelWidth(pixelWidthUs: number): void {
   }
 }
 
-/**
- * Throws a RangeError for a window that ends before it starts.
- *
- * Checked up front because a montage clamps its window to the pair's shared extent, which
- * would otherwise repair the inversion and read an empty window instead of reporting it.
- */
+/** Throws a RangeError for a window that ends before it starts. */
 function requireWindow(startUs: number, endUs: number): void {
   if (endUs < startUs) {
     throw new RangeError(
@@ -512,7 +506,7 @@ function unitArrays(catalog: BundleCatalog, id: string): UnitArrays {
   return entry.unit;
 }
 
-/** Returns the raw (level 0) entry of a continuous channel. */
+/** Returns a continuous channel's raw pyramid level, level 0. */
 function rawLevel(entry: ChannelEntry): LevelInfo {
   // readCatalog rejects a continuous channel that has no raw level.
   return entry.levels.find((level) => !level.isMinMax)!;

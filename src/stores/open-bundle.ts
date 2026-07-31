@@ -23,8 +23,8 @@ async function loadFileStore(path: string): Promise<Store> {
  * paths, POSIX or Windows drive-letter, use `FileStore`, imported dynamically to keep
  * `node:fs` out of browser bundles. Relative paths and unrecognized schemes throw.
  *
- * A store that needs credentials must be constructed by the consumer and passed as a `Store`
- * directly. Every store must implement `getRange`; bundle arrays are sharded.
+ * Neither built-in store sends credentials; the consumer constructs an authenticating
+ * store and passes it as a `Store`.
  */
 export async function openBundle(url: string): Promise<Store> {
   if (url.startsWith("/") || DRIVE_LETTER_PATH.test(url)) {

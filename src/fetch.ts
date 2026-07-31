@@ -9,7 +9,7 @@ import { MAX_INFLIGHT_FETCHES } from "./constants.js";
 export type FetchLimit = <T>(task: () => Promise<T>) => Promise<T>;
 
 /**
- * Creates the gate that bounds in-flight chunk reads.
+ * Creates the limit that bounds in-flight chunk reads.
  *
  * `concurrency` overrides the `MAX_INFLIGHT_FETCHES` default. Cancellation is not
  * handled here; a query passes its `AbortSignal` to the store.

@@ -19,7 +19,7 @@ export interface Filter {
   process(samples: Float64Array): Float64Array;
   /**
    * Discards state carried from earlier chunks; the next `process` call starts
-   * fresh. Use across a break in the signal.
+   * fresh.
    */
   reset(): void;
 }
@@ -78,9 +78,8 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
  *
  * `rateHz` is the channel's native sampling rate; it fixes the meaning of every
  * frequency in `spec`. Samples stay in physical units: no unit conversion, no
- * gain. For bandpass and bandstop, `lowHz` and `highHz` are the band edges,
- * converted to the center frequency and octave width the cascade builder
- * takes. Attenuation at the nominal edges deepens with `order`.
+ * gain. For bandpass and bandstop, `lowHz` and `highHz` are the band edges.
+ * Attenuation at the nominal edges deepens with `order`.
  *
  * Throws a RangeError for an `order` that is not an integer from 1 to 12, a
  * frequency not strictly between 0 and half `rateHz`, or a `lowHz` at or above
@@ -120,10 +119,10 @@ export interface FilterSession {
    * periods of where that segment ended. An initial segment, a wider gap, or a
    * jump backwards of more than one sample filters from a cleared state.
    *
-   * A first sample repeating the previous segment's last is dropped, so the
-   * returned `startUs` advances one period and a segment holding only the repeat
-   * comes back empty. Every sample therefore reaches the filter once, whatever
-   * windows a range was read in.
+   * A first sample repeating the previous segment's last is dropped: the returned
+   * `startUs` advances one period, and a segment holding only the repeat comes
+   * back empty. Each sample reaches the filter once, whatever windows a range was
+   * read in.
    *
    * An empty segment returns empty and leaves the state unchanged.
    * Throws a RangeError for a min/max segment.
@@ -172,8 +171,8 @@ export function createFilterSession(): FilterSession {
         entries.set(key, entry);
       } else {
         // Measured in samples, not microseconds: a channel period is rarely a whole
-        // number of microseconds, so `startUs` carries rounding that only rounding back
-        // to samples cancels.
+        // number of microseconds, so `startUs` carries rounding error that only a
+        // round back to samples cancels.
         const driftSamples = Math.round(
           (segment.startUs - entry.nextStartUs) / segment.samplePeriodUs,
         );

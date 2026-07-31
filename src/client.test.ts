@@ -933,8 +933,8 @@ describe("dataSpans", () => {
   });
 
   test("passes its signal through to the level read", async () => {
-    // Aborting once the catalog has been served leaves the guard at the top of the call
-    // already behind, so only a signal reaching the store can reject this.
+    // The signal aborts during the catalog read, past the guard at the top of the call:
+    // only a signal reaching the store can reject this.
     const controller = new AbortController();
     const inner = createMemoryStore(bundleFiles(CHANNELS));
     const store: Store = {
