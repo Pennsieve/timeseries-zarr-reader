@@ -1,8 +1,8 @@
 /**
  * A contiguous run of one trace's data over a queried window.
  *
- * Timestamps are UTC microseconds. Values are in physical units. The reader
- * never flips signs.
+ * Timestamps are UTC microseconds. Values are in physical units, and the
+ * reader never flips signs.
  */
 export interface Segment {
   /** Channel id the segment belongs to (a compound key when montaged). */
@@ -55,7 +55,7 @@ export interface MontagePair {
 /**
  * A Butterworth filter request. Frequencies are in hertz. The `type`
  * discriminant fixes which cutoff fields apply. Lowpass and highpass take
- * `cutoffHz`. Bandpass and bandstop take a `lowHz`/`highHz` band.
+ * `cutoffHz`, bandpass and bandstop a `lowHz`/`highHz` band.
  */
 export type FilterSpec =
   | {
@@ -98,7 +98,10 @@ export interface EventBatch {
   readonly samplePeriodUs: number;
   /** Samples per spike waveform. 0 when waveforms were not fetched. */
   readonly pointsPerEvent: number;
-  /** True when the waveforms were resampled. Always false. Waveforms are returned as stored. */
+  /**
+   * True when the waveforms were resampled. Always false, since waveforms are
+   * returned as stored.
+   */
   readonly isResampled: boolean;
   /** Timestamps of the events, ascending. */
   readonly times: Float64Array;

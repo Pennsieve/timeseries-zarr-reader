@@ -60,7 +60,7 @@ UTC microseconds. Sample values stay in each channel's physical unit, as recorde
 ### `new StreamingClient(options)`
 
 Takes `{ store, maxRawBytes? }`. `store` is any object that implements the `Store` type.
-`maxRawBytes` caps raw-level reads (15 MB by default). Each query can override it.
+`maxRawBytes` caps raw-level reads (15 MB by default) and can be overridden per query.
 
 ### `channelInfo()`
 
@@ -94,8 +94,8 @@ rejects with `RawReadTooLargeError` before fetching anything. The error carries
 `requestedBytes` and `maxBytes`. Narrow the window or pass a larger `maxRawBytes` to
 proceed.
 
-`query()` is an async generator. It validates on the first iteration, not on the call.
-Wrap the `for await` loop in `try`/`catch`, not the call.
+`query()` is an async generator, so it validates on the first iteration rather than on
+the call. Wrap the `for await` loop in `try`/`catch`, not the call.
 
 Segments are delivered on bin boundaries. A segment's `startUs` is the start of the first
 bin that overlaps the window, and its data can run up to one bin past `endUs`. A window
@@ -134,8 +134,8 @@ into one span. The default of 0 splits on every gap.
 
 ### `openBundle(url)` and stores
 
-The reader performs no network or filesystem I/O of its own. All reads go through a
-`Store`. `openBundle(url)` picks a built-in store by scheme or path form:
+Every read goes through a `Store`, so the reader itself performs no network or filesystem
+I/O. `openBundle(url)` picks a built-in store by scheme or path form:
 
 - `http://` and `https://` URLs get `FetchStore`, which is also exported.
 - `file://` URLs and absolute paths, POSIX (`/bundle.zarr`) or Windows drive-letter
@@ -193,8 +193,8 @@ pnpm lint          # eslint --fix + prettier --write (rewrites files)
 pnpm format:check  # prettier --check (read-only)
 ```
 
-`src/index.ts` re-exports the public API. `src/client.ts` holds `StreamingClient`. Tests
-sit beside the module they cover, as `src/<module>.test.ts`. The acceptance tests read
-`test-data/sample.zarr`, a small bundle committed to the repository.
+`src/index.ts` re-exports the public API, and `src/client.ts` holds `StreamingClient`.
+Tests sit beside the module they cover, as `src/<module>.test.ts`. The acceptance tests
+read `test-data/sample.zarr`, a small bundle committed to the repository.
 `scripts/generate-test-bundle.py` lists its contents and rewrites it from a `ts-zarr-py`
 checkout.

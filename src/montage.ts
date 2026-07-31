@@ -16,7 +16,7 @@ export function subtract(
     );
   }
 
-  // A plain loop, because this runs over millions of raw samples.
+  // A plain loop, because subtraction runs over millions of raw samples.
   const out = new Float64Array(lead.length);
   for (let i = 0; i < out.length; i++) {
     out[i] = lead[i]! - secondary[i]!;

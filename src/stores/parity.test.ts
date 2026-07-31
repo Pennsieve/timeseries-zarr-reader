@@ -1,6 +1,6 @@
 /**
  * The same bundle read through the filesystem store and through the HTTP store must produce
- * identical output. The test server is a minimal static file server. It serves the offset
+ * identical output. The test server is a minimal static file server that serves the offset
  * and suffix Range forms the HTTP store needs.
  */
 import { readFile } from "node:fs/promises";

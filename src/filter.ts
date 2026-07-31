@@ -18,8 +18,8 @@ export interface Filter {
   /** Filters one chunk of samples in order and returns a new array. The input is not modified. */
   process(samples: Float64Array): Float64Array;
   /**
-   * Discards state carried from earlier chunks. The next `process` call starts
-   * fresh.
+   * Discards state carried from earlier chunks, so the next `process` call
+   * starts fresh.
    */
   reset(): void;
 }
@@ -76,10 +76,10 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
 /**
  * Builds a Butterworth filter for one channel.
  *
- * `rateHz` is the channel's native sampling rate. It fixes the meaning of every
- * frequency in `spec`. Samples stay in physical units: no unit conversion, no
- * gain. For bandpass and bandstop, `lowHz` and `highHz` are the band edges.
- * Attenuation at the nominal edges deepens with `order`.
+ * Every frequency in `spec` is read against `rateHz`, the channel's native
+ * sampling rate. Samples stay in physical units: no unit conversion, no gain.
+ * For bandpass and bandstop, `lowHz` and `highHz` are the band edges, and
+ * attenuation at those nominal edges deepens with `order`.
  *
  * Throws a RangeError for an `order` that is not an integer from 1 to 12, a
  * frequency not strictly between 0 and half `rateHz`, or a `lowHz` at or above
@@ -106,13 +106,12 @@ export function createFilter(spec: FilterSpec, rateHz: number): Filter {
 /**
  * Filters raw segments, holding filter state per (channel, spec, rate).
  *
- * Sessions are independent. Two sessions filtering the same channel do not
- * share state.
+ * Two sessions filtering the same channel hold separate state.
  */
 export interface FilterSession {
   /**
-   * Filters one raw segment. Returns a new segment with the filtered data. The
-   * input is not modified.
+   * Filters one raw segment. Returns a new segment with the filtered data and
+   * does not modify the input.
    *
    * State carries over from the previous segment of the same (channel, spec,
    * rate) when this segment starts within `FILTER_GAP_RESET_SAMPLES` sample
@@ -159,14 +158,14 @@ export function createFilterSession(): FilterSession {
         return { ...segment };
       }
 
-      // The spec and rate parts contain no "|". A channel id containing the
+      // The spec and rate parts contain no "|", so a channel id containing the
       // separator cannot collide with another key.
       const key = `${specKey(spec)}|${rateHz}|${segment.channel}`;
       let entry = entries.get(key);
       let alreadyFiltered = 0;
 
       if (entry === undefined) {
-        // A new filter starts cleared. No continuity check is needed.
+        // A new filter starts cleared, so there is no continuity to check.
         entry = { filter: createFilter(spec, rateHz), nextStartUs: 0 };
         entries.set(key, entry);
       } else {

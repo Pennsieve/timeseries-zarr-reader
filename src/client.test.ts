@@ -124,7 +124,7 @@ const CHANNELS: BundleChannel[] = [
     ],
   },
   {
-    // Same rate as "a", but sampling half a period later. No shared grid exists.
+    // Same rate as "a", but sampling half a period later, so no shared grid exists.
     path: "7",
     attributes: { ...attrs("m", "M", 1000), start_us: 1_000_500 },
     levels: [{ periodUs: 1000, samples: [0, 0, 0, 0, 0, 0, 0, 0] }],
@@ -677,7 +677,7 @@ describe("filter", () => {
       chunked.push(...Array.from(segment.data));
     }
 
-    // The jump back to the start resets the state. The whole window filters fresh.
+    // The jump back to the start resets the state, so the whole window filters fresh.
     const whole = await collectOne(
       client.query({
         channels: ["a"],
@@ -1027,7 +1027,8 @@ describe("acceptance: committed bundle", () => {
         inner.getRange(key, range, opts).then(counted),
     };
     const client = new StreamingClient({ store });
-    // The incompressible channel. On the sines, compression hides the sample-count ratio.
+    // The incompressible channel, since compression hides the sample-count ratio on the
+    // sines.
     const info = channelById(await client.channelInfo(), "noise");
     const window = { startUs: info.startUs, endUs: info.endUs };
 

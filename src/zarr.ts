@@ -4,8 +4,8 @@ import type { Store, StoreOptions } from "./types.js";
 /**
  * Opens the array at `path`, pinned to Zarr v3.
  *
- * `path` is resolved onto the store's root location. An options `path` is ignored by
- * zarrita. A missing array rejects with an Error naming the path. Any other failure
+ * `path` is resolved onto the store's root location, and zarrita ignores an options
+ * `path`. A missing array rejects with an Error naming the path. Any other failure
  * propagates unchanged.
  */
 async function openArray(
@@ -46,10 +46,10 @@ function requireFloatDtype(
 /**
  * Reads a level's bins over a half-open index range.
  *
- * The range is not clamped. Derive it with {@link binRange}. An empty range returns
- * empty data. A rank-1 array yields raw samples. A rank-2 `[n, 2]` array yields
- * interleaved `[min, max, ...]` pairs. Stored float32 samples widen to `Float64Array`.
- * `opts.signal` is forwarded to the store.
+ * The range is used as given, with no clamping to the array's bounds. {@link binRange}
+ * derives a clamped one. An empty range returns empty data. A rank-1 array yields raw
+ * samples, a rank-2 `[n, 2]` array interleaved `[min, max, ...]` pairs. Stored float32
+ * samples widen to `Float64Array`. `opts.signal` is forwarded to the store.
  *
  * Throws when no array exists at `path`, its shape is neither `[n]` nor `[n, 2]`, or
  * its dtype is neither float32 nor float64.

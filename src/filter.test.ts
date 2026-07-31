@@ -263,7 +263,7 @@ test("keeps every sample when the next segment starts one period later", () => {
   const { signal, first, second, secondStartUs } = split();
   const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
 
-  // A one-sample hole, not a repeat. The segment must come back whole.
+  // A one-sample hole rather than a repeat, so the segment must come back whole.
   const session = createFilterSession();
   session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
   const out = session.apply(

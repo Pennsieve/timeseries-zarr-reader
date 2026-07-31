@@ -12,9 +12,9 @@ export async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 /**
  * Creates a `Store` backed by an object literal.
  *
- * String values are encoded as UTF-8. Reads return a copy. The stored arrays are not
- * copied on construction. An absent key resolves to `undefined`. An empty file is distinct
- * from an absent one. An already-aborted signal rejects the read.
+ * String values are encoded as UTF-8. Reads return a copy, though the stored arrays are
+ * not copied on construction. An absent key resolves to `undefined`, and an empty file is
+ * distinct from an absent one. An already-aborted signal rejects the read.
  */
 export function createMemoryStore(
   files: Record<`/${string}`, string | Uint8Array>,

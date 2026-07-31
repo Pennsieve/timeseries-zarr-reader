@@ -54,7 +54,7 @@ declare module "fili" {
   }
 
   /**
-   * A cascaded IIR filter. Each instance owns its delay registers. Instances
+   * A cascaded IIR filter. Each instance owns its delay registers, so two
    * built from the same coefficients are independent.
    */
   interface IirFilter {

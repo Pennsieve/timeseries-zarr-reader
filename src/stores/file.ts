@@ -18,10 +18,10 @@ function isMissing(error: unknown): boolean {
  *
  * Requires `node:fs` and runs only on Node. Reachable from the `./node` subpath export.
  *
- * Keys resolve beneath `root`. A key that resolves outside `root` throws. A ranged read
+ * Keys resolve beneath `root`, and a key that resolves outside it throws. A ranged read
  * seeks and reads only the requested bytes. Nothing is cached or held open between reads.
  *
- * A missing file resolves to `undefined`. An empty file resolves to zero bytes. Any other
+ * A missing file resolves to `undefined`, and an empty file to zero bytes. Any other
  * filesystem failure propagates.
  */
 export class FileStore implements Store {

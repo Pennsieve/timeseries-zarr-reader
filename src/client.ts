@@ -31,7 +31,7 @@ const BYTES_PER_RAW_SAMPLE = 4;
  * Thrown when a forced-raw read would exceed the byte cap.
  *
  * Raised before any data is fetched. `requestedBytes` is the size the read would have
- * fetched. `maxBytes` is the cap in effect.
+ * fetched, and `maxBytes` is the cap in effect.
  */
 export class RawReadTooLargeError extends Error {
   readonly requestedBytes: number;
@@ -55,7 +55,7 @@ export interface StreamingClientOptions {
   readonly maxRawBytes?: number;
 }
 
-/** Options for one continuous query. Times are UTC microseconds. `endUs` is exclusive. */
+/** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
 export interface QueryOptions {
   /**
    * Channel ids to read. Exactly one of `channels` and `montage` carries the query's
@@ -84,7 +84,7 @@ export interface QueryOptions {
   readonly signal?: AbortSignal;
 }
 
-/** Options for one unit-channel query. Times are UTC microseconds. `endUs` is exclusive. */
+/** Options for one unit-channel query. Times are UTC microseconds, `endUs` exclusive. */
 export interface UnitQueryOptions {
   readonly channels: readonly string[];
   readonly startUs: number;
@@ -171,9 +171,9 @@ export class StreamingClient {
    * set, output is resampled onto the pixel grid when one pixel spans more than three
    * source bins.
    *
-   * Segments are delivered on bin boundaries. One may begin before `startUs` or end after
-   * `endUs` by less than one of its own bins. Clipping to the exact window is the caller's
-   * concern. The exception is a filtered segment continuing from the previous query, which
+   * Segments are delivered on bin boundaries, so one may begin before `startUs` or end
+   * after `endUs` by less than one of its own bins. Clipping to the exact window is the
+   * caller's concern. The exception is a filtered segment continuing from the previous query, which
    * begins at the first sample that query did not return. A window with no overlap yields
    * empty data, with `startUs` clamped to the channel's extent.
    *
@@ -270,7 +270,7 @@ export class StreamingClient {
    * window.
    *
    * Reads the coarsest pyramid level and treats a bin as populated when any of its values
-   * is finite. Consecutive populated bins merge into one span. Gaps no wider than
+   * is finite. Consecutive populated bins merge into one span, and gaps no wider than
    * `gapThresholdUs` are bridged. Span edges align to that level's bin boundaries. Throws
    * for an unknown channel id, a unit channel, or an `endUs` before `startUs`.
    */
@@ -364,7 +364,7 @@ export class StreamingClient {
       );
     }
 
-    // Subtraction pairs samples by index. The channels must share a sample grid, with
+    // Subtraction pairs samples by index, so the channels must share a sample grid, with
     // equal periods and starts a whole number of periods apart.
     const leadRaw = rawLevel(lead);
     const secondaryRaw = rawLevel(secondary);

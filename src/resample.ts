@@ -4,10 +4,10 @@ import type { Segment } from "./types.js";
  * Resamples a segment to one [min, max] pair per output pixel.
  *
  * Buckets are `pixelWidthUs` wide, anchored at the segment's `startUs`. Raw input is
- * reduced to the min and max of each bucket. Envelope input merges pairs (smallest
+ * reduced to the min and max of each bucket, and envelope input merges pairs (smallest
  * min, largest max). A trailing partial bucket is kept. Empty input yields empty data.
  *
- * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN]. A
+ * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN], so a
  * gap in the input stays a gap in the output.
  *
  * The result is envelope data. `isMinMax` is true and `samplePeriodUs` becomes

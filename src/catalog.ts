@@ -123,8 +123,8 @@ export function selectLevel<T extends { periodUs: number }>(
 /**
  * Returns the half-open bin index range covering the window `[startUs, endUs)`.
  *
- * `start` is the first overlapped bin. `end` is one past the last. Both are clamped to
- * `[0, grid.binCount]`. A bin that partially overlaps the window is included. A bin
+ * `start` is the first overlapped bin, and `end` is one past the last. Both are clamped
+ * to `[0, grid.binCount]`. A bin that partially overlaps the window is included. A bin
  * starting exactly at the exclusive `endUs` is not.
  *
  * `grid.startUs` is the absolute time of bin 0.
@@ -293,9 +293,9 @@ function readUnitArrays(
 /**
  * Reads a bundle's root metadata and enumerates its channels and levels.
  *
- * The bundle is read in one request to `/zarr.json`. Its `consolidated_metadata` inlines
- * every descendant's metadata. A missing `consolidated_metadata` is an error. The tree is
- * never walked.
+ * The bundle is read in one request to `/zarr.json`, whose `consolidated_metadata`
+ * inlines every descendant's metadata. A missing `consolidated_metadata` is an error,
+ * since the tree is never walked.
  *
  * Levels are returned finest first. A level's layout comes from its rank: rank 1 is raw,
  * rank 2 with a trailing dimension of 2 is a min/max envelope. A unit channel's `events`
@@ -362,7 +362,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       continue;
     }
 
-    // A numbered array directly under a channel is a pyramid level. A named one is
+    // A numbered array directly under a channel is a pyramid level, and a named one is
     // unit-channel data. Deeper nodes are ignored.
     const channelPath = nodePath.slice(0, slash);
     const leaf = nodePath.slice(slash + 1);
@@ -390,8 +390,8 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
     );
     const raw = levels.find((level) => !level.isMinMax);
 
-    // `kind` is read here only to decide whether a raw level is required. toChannelInfo
-    // validates the attributes.
+    // `kind` is read here only to decide whether a raw level is required, and
+    // toChannelInfo validates the attributes.
     if (asObject(node.attributes)?.kind === "continuous" && raw === undefined) {
       throw new Error(`continuous channel /${channelPath} has no raw level`);
     }
