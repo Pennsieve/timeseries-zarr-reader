@@ -15,7 +15,7 @@ test("the package exports exactly the documented runtime symbols", () => {
   expect(Object.keys(reader).sort()).toEqual(RUNTIME_EXPORTS);
 });
 
-// One assertion per re-exported type: dropping a type export fails to compile here.
+// One assertion per re-exported type. Dropping a type export fails to compile here.
 test("the package re-exports the declared types", () => {
   expectTypeOf<reader.ByteRange>().toEqualTypeOf<types.ByteRange>();
   expectTypeOf<reader.ChannelInfo>().toEqualTypeOf<types.ChannelInfo>();

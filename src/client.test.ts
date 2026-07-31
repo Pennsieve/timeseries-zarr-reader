@@ -124,7 +124,7 @@ const CHANNELS: BundleChannel[] = [
     ],
   },
   {
-    // Same rate as "a", but sampling half a period later: no shared grid exists.
+    // Same rate as "a", but sampling half a period later. No shared grid exists.
     path: "7",
     attributes: { ...attrs("m", "M", 1000), start_us: 1_000_500 },
     levels: [{ periodUs: 1000, samples: [0, 0, 0, 0, 0, 0, 0, 0] }],
@@ -445,7 +445,7 @@ describe("query", () => {
   });
 
   test("produces no unhandled rejection when iteration stops early", async () => {
-    // The second trace's read fails after the generator is dropped; an unhandled
+    // The second trace's read fails after the generator is dropped. An unhandled
     // rejection would fail the run.
     const files = bundleFiles(CHANNELS);
     delete files["/1/0/zarr.json"];
@@ -677,7 +677,7 @@ describe("filter", () => {
       chunked.push(...Array.from(segment.data));
     }
 
-    // The jump back to the start resets the state; the whole window filters fresh.
+    // The jump back to the start resets the state. The whole window filters fresh.
     const whole = await collectOne(
       client.query({
         channels: ["a"],
@@ -933,8 +933,8 @@ describe("dataSpans", () => {
   });
 
   test("passes its signal through to the level read", async () => {
-    // The signal aborts during the catalog read, past the guard at the top of the call:
-    // only a signal reaching the store can reject this.
+    // The signal aborts during the catalog read, past the guard at the top of the call.
+    // Only a signal reaching the store can reject this.
     const controller = new AbortController();
     const inner = createMemoryStore(bundleFiles(CHANNELS));
     const store: Store = {
@@ -960,8 +960,7 @@ test("openBundle returns the re-exported FetchStore for http URLs", async () => 
   );
 });
 
-// test-data/sample.zarr is written by scripts/generate-test-bundle.py; its content is
-// documented there.
+// scripts/generate-test-bundle.py writes test-data/sample.zarr and lists its contents.
 const BUNDLE = fileURLToPath(
   new URL("../test-data/sample.zarr", import.meta.url),
 );
@@ -1028,7 +1027,7 @@ describe("acceptance: committed bundle", () => {
         inner.getRange(key, range, opts).then(counted),
     };
     const client = new StreamingClient({ store });
-    // The incompressible channel: on the sines, compression hides the sample-count ratio.
+    // The incompressible channel. On the sines, compression hides the sample-count ratio.
     const info = channelById(await client.channelInfo(), "noise");
     const window = { startUs: info.startUs, endUs: info.endUs };
 

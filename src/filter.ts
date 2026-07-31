@@ -1,4 +1,4 @@
-// fili is CommonJS; native Node ESM guarantees only the default export for CJS modules.
+// fili is CommonJS. Native Node ESM guarantees only the default export for CJS modules.
 import fili from "fili";
 import type { FilterSpec, Segment } from "./types.js";
 import { FILTER_GAP_RESET_SAMPLES } from "./constants.js";
@@ -11,14 +11,14 @@ const MAX_ORDER = 12;
 /**
  * A stateful Butterworth filter.
  *
- * `process` carries IIR state across calls: a signal delivered in chunks
+ * `process` carries IIR state across calls. A signal delivered in chunks
  * filters identically to the same signal delivered whole.
  */
 export interface Filter {
   /** Filters one chunk of samples in order and returns a new array. The input is not modified. */
   process(samples: Float64Array): Float64Array;
   /**
-   * Discards state carried from earlier chunks; the next `process` call starts
+   * Discards state carried from earlier chunks. The next `process` call starts
    * fresh.
    */
   reset(): void;
@@ -76,7 +76,7 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
 /**
  * Builds a Butterworth filter for one channel.
  *
- * `rateHz` is the channel's native sampling rate; it fixes the meaning of every
+ * `rateHz` is the channel's native sampling rate. It fixes the meaning of every
  * frequency in `spec`. Samples stay in physical units: no unit conversion, no
  * gain. For bandpass and bandstop, `lowHz` and `highHz` are the band edges.
  * Attenuation at the nominal edges deepens with `order`.
@@ -106,20 +106,20 @@ export function createFilter(spec: FilterSpec, rateHz: number): Filter {
 /**
  * Filters raw segments, holding filter state per (channel, spec, rate).
  *
- * Sessions are independent: two sessions filtering the same channel do not
+ * Sessions are independent. Two sessions filtering the same channel do not
  * share state.
  */
 export interface FilterSession {
   /**
-   * Filters one raw segment. Returns a new segment with the filtered data;
-   * the input is not modified.
+   * Filters one raw segment. Returns a new segment with the filtered data. The
+   * input is not modified.
    *
    * State carries over from the previous segment of the same (channel, spec,
    * rate) when this segment starts within `FILTER_GAP_RESET_SAMPLES` sample
    * periods of where that segment ended. An initial segment, a wider gap, or a
    * jump backwards of more than one sample filters from a cleared state.
    *
-   * A first sample repeating the previous segment's last is dropped: the returned
+   * A first sample repeating the previous segment's last is dropped. The returned
    * `startUs` advances one period, and a segment holding only the repeat comes
    * back empty. Each sample reaches the filter once, whatever windows a range was
    * read in.
@@ -132,7 +132,7 @@ export interface FilterSession {
   clear(): void;
 }
 
-/** Canonical key for a spec; equal specs produce equal keys. */
+/** Canonical key for a spec. Equal specs produce equal keys. */
 function specKey(spec: FilterSpec): string {
   return spec.type === "lowpass" || spec.type === "highpass"
     ? `${spec.type}:${spec.order}:${spec.cutoffHz}`
@@ -142,7 +142,7 @@ function specKey(spec: FilterSpec): string {
 /**
  * Creates a filter session.
  *
- * One filter accumulates per (channel, spec, rate) applied; `clear` releases
+ * One filter accumulates per (channel, spec, rate) applied. `clear` releases
  * them all.
  */
 export function createFilterSession(): FilterSession {
@@ -159,18 +159,18 @@ export function createFilterSession(): FilterSession {
         return { ...segment };
       }
 
-      // The spec and rate parts contain no "|"; a channel id containing the
+      // The spec and rate parts contain no "|". A channel id containing the
       // separator cannot collide with another key.
       const key = `${specKey(spec)}|${rateHz}|${segment.channel}`;
       let entry = entries.get(key);
       let alreadyFiltered = 0;
 
       if (entry === undefined) {
-        // A new filter starts cleared; no continuity check needed.
+        // A new filter starts cleared. No continuity check is needed.
         entry = { filter: createFilter(spec, rateHz), nextStartUs: 0 };
         entries.set(key, entry);
       } else {
-        // Measured in samples, not microseconds: a channel period is rarely a whole
+        // Measured in samples, not microseconds. A channel period is rarely a whole
         // number of microseconds, so `startUs` carries rounding error that only a
         // round back to samples cancels.
         const driftSamples = Math.round(

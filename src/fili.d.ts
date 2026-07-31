@@ -3,11 +3,11 @@
  * uses. Parameter names come from fili.js.
  *
  * Bandpass and bandstop take a center frequency and a width in octaves, not
- * two edge frequencies; edges passed under other names silently yield null
+ * two edge frequencies. Edges passed under other names silently yield null
  * coefficients and NaN output.
  *
  * The package is CommonJS, declared with `export =` and consumed via a default
- * import; named ESM imports fail on native Node.
+ * import. Named ESM imports fail on native Node.
  */
 declare module "fili" {
   /**
@@ -27,7 +27,7 @@ declare module "fili" {
    * hertz, matching `Fs`.
    */
   interface EdgeCascadeParams {
-    /** Number of stages; the builder silently clamps above 12. */
+    /** Number of stages. The builder silently clamps above 12. */
     order: number;
     characteristic: "butterworth";
     /** Sampling rate. */
@@ -54,13 +54,13 @@ declare module "fili" {
   }
 
   /**
-   * A cascaded IIR filter. Each instance owns its delay registers; instances
+   * A cascaded IIR filter. Each instance owns its delay registers. Instances
    * built from the same coefficients are independent.
    */
   interface IirFilter {
     /**
      * Filters a run of samples in order. Returns a plain array, even for
-     * typed-array input; `overwrite` filters in place instead.
+     * typed-array input. `overwrite` filters in place instead.
      */
     multiStep(input: ArrayLike<number>, overwrite?: boolean): number[];
     /** Zeroes the delay registers. */

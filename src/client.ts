@@ -31,7 +31,7 @@ const BYTES_PER_RAW_SAMPLE = 4;
  * Thrown when a forced-raw read would exceed the byte cap.
  *
  * Raised before any data is fetched. `requestedBytes` is the size the read would have
- * fetched; `maxBytes` is the cap in effect.
+ * fetched. `maxBytes` is the cap in effect.
  */
 export class RawReadTooLargeError extends Error {
   readonly requestedBytes: number;
@@ -55,11 +55,11 @@ export interface StreamingClientOptions {
   readonly maxRawBytes?: number;
 }
 
-/** Options for one continuous query. Times are UTC microseconds; `endUs` is exclusive. */
+/** Options for one continuous query. Times are UTC microseconds. `endUs` is exclusive. */
 export interface QueryOptions {
   /**
    * Channel ids to read. Exactly one of `channels` and `montage` carries the query's
-   * traces; supplying both or neither throws.
+   * traces. Supplying both or neither throws.
    */
   readonly channels?: readonly string[];
   readonly startUs: number;
@@ -84,7 +84,7 @@ export interface QueryOptions {
   readonly signal?: AbortSignal;
 }
 
-/** Options for one unit-channel query. Times are UTC microseconds; `endUs` is exclusive. */
+/** Options for one unit-channel query. Times are UTC microseconds. `endUs` is exclusive. */
 export interface UnitQueryOptions {
   readonly channels: readonly string[];
   readonly startUs: number;
@@ -99,7 +99,10 @@ export interface DataSpanOptions {
   readonly channel: string;
   readonly startUs: number;
   readonly endUs: number;
-  /** Gaps no wider than this are bridged into one span. Defaults to 0: every gap splits. */
+  /**
+   * Gaps no wider than this are bridged into one span. Defaults to 0, so every gap
+   * splits.
+   */
   readonly gapThresholdUs?: number;
   readonly signal?: AbortSignal;
 }
@@ -129,10 +132,10 @@ type SettledRead =
 /**
  * Reads one bundle by channel id and time window.
  *
- * The constructor performs no I/O; the catalog is read on first use and cached for the
+ * The constructor performs no I/O. The catalog is read on first use and cached for the
  * client's lifetime.
  *
- * Filter state also lives for the client's lifetime: queries over adjacent windows filter as
+ * Filter state also lives for the client's lifetime. Queries over adjacent windows filter as
  * one continuous signal, whether or not their seam falls on a sample. A jump backwards or a
  * gap wider than a hundred samples restarts the filter for that channel.
  *
@@ -168,7 +171,7 @@ export class StreamingClient {
    * set, output is resampled onto the pixel grid when one pixel spans more than three
    * source bins.
    *
-   * Segments are delivered on bin boundaries: one may begin before `startUs` or end after
+   * Segments are delivered on bin boundaries. One may begin before `startUs` or end after
    * `endUs` by less than one of its own bins. Clipping to the exact window is the caller's
    * concern. The exception is a filtered segment continuing from the previous query, which
    * begins at the first sample that query did not return. A window with no overlap yields
@@ -267,7 +270,7 @@ export class StreamingClient {
    * window.
    *
    * Reads the coarsest pyramid level and treats a bin as populated when any of its values
-   * is finite. Consecutive populated bins merge into one span; gaps no wider than
+   * is finite. Consecutive populated bins merge into one span. Gaps no wider than
    * `gapThresholdUs` are bridged. Span edges align to that level's bin boundaries. Throws
    * for an unknown channel id, a unit channel, or an `endUs` before `startUs`.
    */
@@ -361,7 +364,7 @@ export class StreamingClient {
       );
     }
 
-    // Subtraction pairs samples by index: the channels must share a sample grid, with
+    // Subtraction pairs samples by index. The channels must share a sample grid, with
     // equal periods and starts a whole number of periods apart.
     const leadRaw = rawLevel(lead);
     const secondaryRaw = rawLevel(secondary);

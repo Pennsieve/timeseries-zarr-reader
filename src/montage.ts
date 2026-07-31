@@ -3,7 +3,7 @@ import type { ChannelInfo } from "./types.js";
 /**
  * Subtracts `secondary` from `lead`, sample by sample.
  *
- * Values stay in physical units; no sign flip. NaN in either input propagates.
+ * Values stay in physical units, with no sign flip. NaN in either input propagates.
  * Neither input is modified. Throws RangeError when the lengths differ.
  */
 export function subtract(
@@ -16,7 +16,7 @@ export function subtract(
     );
   }
 
-  // Plain loop: this runs over millions of raw samples.
+  // A plain loop, because this runs over millions of raw samples.
   const out = new Float64Array(lead.length);
   for (let i = 0; i < out.length; i++) {
     out[i] = lead[i]! - secondary[i]!;
@@ -28,7 +28,7 @@ export function subtract(
  * Builds the channel key for a montaged trace: `{leadId}_{leadName}<->{secondaryName}`.
  *
  * Swapping lead and secondary yields a different key (the opposite subtraction).
- * Names are copied verbatim, unescaped; the key is a display label, not a parseable
+ * Names are copied verbatim, unescaped. The key is a display label, not a parseable
  * structure.
  */
 export function montageChannelKey(

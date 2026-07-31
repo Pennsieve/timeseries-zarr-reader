@@ -17,7 +17,7 @@ const readerOf = (times: number[]): TimestampReader => ({
 });
 
 test("fetches waveforms only when one waveform spans enough pixels", () => {
-  // 32 points at 40 us = a 1280 us waveform; the threshold is 10 pixels.
+  // 32 points at 40 us = a 1280 us waveform. The threshold is 10 pixels.
   expect(shouldFetchWaveforms(100, 32, 40)).toBe(true);
   expect(shouldFetchWaveforms(128, 32, 40)).toBe(false);
   expect(shouldFetchWaveforms(1000, 32, 40)).toBe(false);
@@ -37,7 +37,7 @@ test("returns 0 for an empty timestamp array", async () => {
 });
 
 test("returns the first index of a run of duplicate timestamps", async () => {
-  // Simultaneous events share a timestamp; a mid-run index would drop the earlier ones.
+  // Simultaneous events share a timestamp. A mid-run index would drop the earlier ones.
   const reader = readerOf([1000, 5000, 5000, 5000, 9000]);
   expect(await firstIndexAtOrAfter(reader, 5000)).toBe(1);
   expect(await firstIndexAtOrAfter(readerOf([5000, 5000, 5000]), 5000)).toBe(0);
@@ -97,7 +97,7 @@ test("includes an event exactly at the window start", async () => {
 });
 
 test("fetches the matching waveform rows when the waveform spans enough pixels", async () => {
-  // One waveform is 3 x 100 us = 300 us; a 20 us pixel puts it across 15 pixels.
+  // One waveform is 3 x 100 us = 300 us. A 20 us pixel puts it across 15 pixels.
   const event = await queryUnitChannel(store, "u", UNIT, {
     startUs: 1_003_000,
     endUs: 1_009_000,

@@ -4,8 +4,8 @@ import type { Store, StoreOptions } from "./types.js";
 /**
  * Opens the array at `path`, pinned to Zarr v3.
  *
- * `path` is resolved onto the store's root location; an options `path` is ignored by
- * zarrita. A missing array rejects with an Error naming the path; any other failure
+ * `path` is resolved onto the store's root location. An options `path` is ignored by
+ * zarrita. A missing array rejects with an Error naming the path. Any other failure
  * propagates unchanged.
  */
 async function openArray(
@@ -46,8 +46,8 @@ function requireFloatDtype(
 /**
  * Reads a level's bins over a half-open index range.
  *
- * The range is not clamped; derive it with {@link binRange}. An empty range returns
- * empty data. A rank-1 array yields raw samples; a rank-2 `[n, 2]` array yields
+ * The range is not clamped. Derive it with {@link binRange}. An empty range returns
+ * empty data. A rank-1 array yields raw samples. A rank-2 `[n, 2]` array yields
  * interleaved `[min, max, ...]` pairs. Stored float32 samples widen to `Float64Array`.
  * `opts.signal` is forwarded to the store.
  *
@@ -99,7 +99,7 @@ const MAX_SAFE_TIMESTAMP = BigInt(Number.MAX_SAFE_INTEGER);
  * Opens a timestamp array for reading.
  *
  * Stored int64 values are converted to numbers. The conversion is exact for
- * microsecond timestamps; a value outside the safe integer range throws a RangeError.
+ * microsecond timestamps. A value outside the safe integer range throws a RangeError.
  *
  * Throws when no array exists at `path` or it is not rank-1 int64.
  */

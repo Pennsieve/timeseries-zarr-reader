@@ -16,12 +16,12 @@ function isMissing(error: unknown): boolean {
 /**
  * A `Store` over a bundle directory on disk.
  *
- * Node-only: it imports `node:fs`. Reachable from the `./node` subpath export.
+ * Requires `node:fs` and runs only on Node. Reachable from the `./node` subpath export.
  *
- * Keys resolve beneath `root`; a key that resolves outside `root` throws. A ranged read seeks
- * and reads only the requested bytes. Nothing is cached or held open between reads.
+ * Keys resolve beneath `root`. A key that resolves outside `root` throws. A ranged read
+ * seeks and reads only the requested bytes. Nothing is cached or held open between reads.
  *
- * A missing file resolves to `undefined`; an empty file resolves to zero bytes. Any other
+ * A missing file resolves to `undefined`. An empty file resolves to zero bytes. Any other
  * filesystem failure propagates.
  */
 export class FileStore implements Store {

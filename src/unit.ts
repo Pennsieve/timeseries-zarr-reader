@@ -32,7 +32,7 @@ export async function firstIndexAtOrAfter(
   while (low < high) {
     const middle = (low + high) >>> 1;
     const probe = await reader.read(middle, middle + 1);
-    // middle < high <= reader.count; the single-element read is never empty.
+    // middle < high <= reader.count. The single-element read is never empty.
     if (probe[0]! < timeUs) {
       low = middle + 1;
     } else {
@@ -45,9 +45,9 @@ export async function firstIndexAtOrAfter(
 /**
  * Reads one unit channel's events over a time window.
  *
- * The window is half-open: an event exactly at `endUs` is excluded. Waveforms
+ * The window is half-open. An event exactly at `endUs` is excluded. Waveforms
  * are fetched only when the window holds events and
- * {@link shouldFetchWaveforms} returns true for `pixelWidthUs`; otherwise
+ * {@link shouldFetchWaveforms} returns true for `pixelWidthUs`. Otherwise
  * `pointsPerEvent` is 0 and `data` is empty. `samplePeriodUs` is the waveform
  * sample period whether or not waveforms were fetched. `isResampled` is always
  * false.

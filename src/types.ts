@@ -1,7 +1,7 @@
 /**
  * A contiguous run of one trace's data over a queried window.
  *
- * Timestamps are UTC microseconds. Values are in physical units; the reader
+ * Timestamps are UTC microseconds. Values are in physical units. The reader
  * never flips signs.
  */
 export interface Segment {
@@ -39,7 +39,7 @@ export interface ChannelInfo {
   readonly startUs: number;
   /** Exclusive end of the channel's data: one sample period past the last sample. */
   readonly endUs: number;
-  /** "continuous" for a sampled waveform; "unit" for a discrete event channel. */
+  /** "continuous" for a sampled waveform, "unit" for a discrete event channel. */
   readonly kind: "continuous" | "unit";
 }
 
@@ -54,8 +54,8 @@ export interface MontagePair {
 
 /**
  * A Butterworth filter request. Frequencies are in hertz. The `type`
- * discriminant fixes which cutoff fields apply: lowpass and highpass take
- * `cutoffHz`; bandpass and bandstop take a `lowHz`/`highHz` band.
+ * discriminant fixes which cutoff fields apply. Lowpass and highpass take
+ * `cutoffHz`. Bandpass and bandstop take a `lowHz`/`highHz` band.
  */
 export type FilterSpec =
   | {
@@ -85,7 +85,7 @@ export type FilterSpec =
  * One unit channel's events within a query window, with their waveforms when
  * those were fetched.
  *
- * Timestamps are UTC microseconds; waveform samples are physical units.
+ * Timestamps are UTC microseconds. Waveform samples are in physical units.
  */
 export interface EventBatch {
   /** Channel id the events belong to. */
@@ -98,7 +98,7 @@ export interface EventBatch {
   readonly samplePeriodUs: number;
   /** Samples per spike waveform. 0 when waveforms were not fetched. */
   readonly pointsPerEvent: number;
-  /** True when the waveforms were resampled. Always false: waveforms are returned as stored. */
+  /** True when the waveforms were resampled. Always false. Waveforms are returned as stored. */
   readonly isResampled: boolean;
   /** Timestamps of the events, ascending. */
   readonly times: Float64Array;
@@ -125,7 +125,7 @@ export interface StoreOptions {
  * Both reads resolve to `undefined` for an absent key. Implementations own
  * authentication and transport.
  *
- * `getRange` is required: every bundle array is sharded, and reading a shard
+ * `getRange` is required. Every bundle array is sharded, and reading a shard
  * fetches its index and then the inner chunk as byte ranges. A store limited
  * to whole-key reads can serve metadata but not data.
  */

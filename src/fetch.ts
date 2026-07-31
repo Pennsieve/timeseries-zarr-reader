@@ -12,7 +12,7 @@ export type FetchLimit = <T>(task: () => Promise<T>) => Promise<T>;
  * Creates the limit that bounds in-flight chunk reads.
  *
  * `concurrency` overrides the `MAX_INFLIGHT_FETCHES` default. Cancellation is not
- * handled here; a query passes its `AbortSignal` to the store.
+ * handled here. A query passes its `AbortSignal` to the store.
  *
  * Throws a TypeError when `concurrency` is not a positive integer.
  */

@@ -12,9 +12,9 @@ export async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 /**
  * Creates a `Store` backed by an object literal.
  *
- * String values are encoded as UTF-8. Reads return a copy; the stored arrays are not copied
- * on construction. An absent key resolves to `undefined`; an empty file is distinct from an
- * absent one. An already-aborted signal rejects the read.
+ * String values are encoded as UTF-8. Reads return a copy. The stored arrays are not
+ * copied on construction. An absent key resolves to `undefined`. An empty file is distinct
+ * from an absent one. An already-aborted signal rejects the read.
  */
 export function createMemoryStore(
   files: Record<`/${string}`, string | Uint8Array>,
@@ -116,7 +116,7 @@ export interface FixtureChannel {
   attributes: Record<string, unknown>;
   /** Pyramid levels, named by index under the channel: `0/0`, `0/1`, ... */
   levels?: FixtureLevel[];
-  /** Non-level child arrays by name; a bare number[] is a float32 shape with no attributes. */
+  /** Non-level child arrays by name. A bare number[] is a float32 shape with no attributes. */
   extraArrays?: Record<string, number[] | FixtureArray>;
 }
 
@@ -124,12 +124,12 @@ export interface FixtureChannel {
  * Builds a bundle's root `zarr.json` as a JSON string, with `consolidated_metadata` inlining
  * every descendant.
  *
- * Mirrors a real bundle: paths in `metadata` are flat and relative (`"0"`, `"0/1"`), and each
+ * Mirrors a real bundle. Paths in `metadata` are flat and relative (`"0"`, `"0/1"`), and each
  * channel group carries its own empty `consolidated_metadata`, as the writer emits.
  *
- * `root` shallow-merges over the root object, for building malformed bundles: `{ zarr_format: 2 }`
- * breaks the format; `{ consolidated_metadata: undefined }` drops the key, since
- * `JSON.stringify` omits undefined values.
+ * `root` shallow-merges over the root object, for building malformed bundles.
+ * `{ zarr_format: 2 }` breaks the format. `{ consolidated_metadata: undefined }` drops the
+ * key, since `JSON.stringify` omits undefined values.
  */
 export function bundleMetadata(
   channels: FixtureChannel[],

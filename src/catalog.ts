@@ -13,7 +13,7 @@ export interface Level0Geometry {
  * `start_us` -> `startUs`. Unrecognized attributes are ignored.
  *
  * For a continuous channel, `endUs` is the exclusive end derived from `level0`: one period
- * past the last sample. For a unit channel, `endUs` equals `startUs`; only the `events`
+ * past the last sample. For a unit channel, `endUs` equals `startUs`. Only the `events`
  * array carries the time of its last event.
  *
  * Throws a TypeError for a missing or wrong-typed attribute, an unrecognized `kind`, or a
@@ -123,8 +123,8 @@ export function selectLevel<T extends { periodUs: number }>(
 /**
  * Returns the half-open bin index range covering the window `[startUs, endUs)`.
  *
- * `start` is the first overlapped bin; `end` is one past the last. Both are clamped to
- * `[0, grid.binCount]`. A bin that partially overlaps the window is included; a bin
+ * `start` is the first overlapped bin. `end` is one past the last. Both are clamped to
+ * `[0, grid.binCount]`. A bin that partially overlaps the window is included. A bin
  * starting exactly at the exclusive `endUs` is not.
  *
  * `grid.startUs` is the absolute time of bin 0.
@@ -183,7 +183,7 @@ export interface UnitArrays {
 
 /** One channel of a bundle: its store path, info, and pyramid levels. */
 export interface ChannelEntry {
-  /** Absolute store path of the channel group; not the channel id. */
+  /** Absolute store path of the channel group, not the channel id. */
   readonly path: `/${string}`;
   readonly info: ChannelInfo;
   /** Finest first. Empty for a unit channel. */
@@ -293,12 +293,13 @@ function readUnitArrays(
 /**
  * Reads a bundle's root metadata and enumerates its channels and levels.
  *
- * One read of `/zarr.json`; its `consolidated_metadata` inlines every descendant's
- * metadata. A missing `consolidated_metadata` is an error; the tree is never walked.
+ * The bundle is read in one request to `/zarr.json`. Its `consolidated_metadata` inlines
+ * every descendant's metadata. A missing `consolidated_metadata` is an error. The tree is
+ * never walked.
  *
  * Levels are returned finest first. A level's layout comes from its rank: rank 1 is raw,
  * rank 2 with a trailing dimension of 2 is a min/max envelope. A unit channel's `events`
- * and `waveforms` arrays are read into {@link UnitArrays}; its `units` array and other
+ * and `waveforms` arrays are read into {@link UnitArrays}. Its `units` array and other
  * unrecognized nodes are ignored.
  *
  * Throws for a missing `/zarr.json`, invalid JSON, a root that is not a Zarr v3 group,
@@ -361,7 +362,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       continue;
     }
 
-    // A numbered array directly under a channel is a pyramid level; a named one is
+    // A numbered array directly under a channel is a pyramid level. A named one is
     // unit-channel data. Deeper nodes are ignored.
     const channelPath = nodePath.slice(0, slash);
     const leaf = nodePath.slice(slash + 1);
@@ -389,7 +390,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
     );
     const raw = levels.find((level) => !level.isMinMax);
 
-    // `kind` is read here only to decide whether a raw level is required; toChannelInfo
+    // `kind` is read here only to decide whether a raw level is required. toChannelInfo
     // validates the attributes.
     if (asObject(node.attributes)?.kind === "continuous" && raw === undefined) {
       throw new Error(`continuous channel /${channelPath} has no raw level`);

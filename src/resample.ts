@@ -4,13 +4,13 @@ import type { Segment } from "./types.js";
  * Resamples a segment to one [min, max] pair per output pixel.
  *
  * Buckets are `pixelWidthUs` wide, anchored at the segment's `startUs`. Raw input is
- * reduced to the min and max of each bucket; envelope input merges pairs (smallest
+ * reduced to the min and max of each bucket. Envelope input merges pairs (smallest
  * min, largest max). A trailing partial bucket is kept. Empty input yields empty data.
  *
- * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN]: a
+ * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN]. A
  * gap in the input stays a gap in the output.
  *
- * The result is envelope data: `isMinMax` is true and `samplePeriodUs` becomes
+ * The result is envelope data. `isMinMax` is true and `samplePeriodUs` becomes
  * `pixelWidthUs`. Throws RangeError when `pixelWidthUs < samplePeriodUs`.
  *
  * @param pixelWidthUs - Time span of one output pixel column, in microseconds.
@@ -31,8 +31,8 @@ export function resampleToPixels(
   const pixelCount = Math.ceil((binCount * samplePeriodUs) / pixelWidthUs);
   const out = new Float64Array(pixelCount * 2);
 
-  // pixelWidthUs >= samplePeriodUs, so bins never skip a pixel: one forward scan fills
-  // the output.
+  // pixelWidthUs >= samplePeriodUs, so bins never skip a pixel and one forward scan
+  // fills the output.
   let bin = 0;
   for (let pixel = 0; pixel < pixelCount; pixel++) {
     let min = Infinity;

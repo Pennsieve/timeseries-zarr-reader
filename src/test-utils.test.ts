@@ -13,7 +13,7 @@ test("encodes string values as UTF-8", async () => {
   const bytes = await store.get("/zarr.json");
 
   expect(new TextDecoder().decode(bytes)).toBe(json);
-  // 9 characters, one of which needs two bytes: latin1 would give 9.
+  // 9 characters, one of which needs two bytes. Latin-1 would give 9.
   expect(bytes?.length).toBe(10);
 });
 
