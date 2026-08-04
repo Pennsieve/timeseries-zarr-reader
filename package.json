@@ -1,8 +1,26 @@
 {
   "name": "@pennsieve/timeseries-zarr-reader",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Reads pyramid Zarr v3 time-series bundles in the browser or Node.js and yields per-channel segments for rendering.",
-  "private": true,
+  "keywords": [
+    "zarr",
+    "zarr-v3",
+    "time-series",
+    "electrophysiology",
+    "eeg",
+    "streaming",
+    "pyramid",
+    "canvas",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "author": "Pennsieve",
+  "homepage": "https://github.com/Pennsieve/timeseries-zarr-reader#readme",
+  "bugs": "https://github.com/Pennsieve/timeseries-zarr-reader/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pennsieve/timeseries-zarr-reader.git"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -17,13 +35,26 @@
   "browser": {
     "./dist/stores/file.js": false
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/test-utils.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint --fix . && prettier --write .",
     "format:check": "prettier --check .",
     "check": "eslint . && prettier --check . && tsc --noEmit && vitest run && pnpm build",
-    "build": "rm -rf dist && tsc -p tsconfig.build.json"
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm check"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
@@ -35,16 +66,13 @@
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   },
-  "packageManager": "pnpm@11.15.1+sha512.81350b07e53c9538a02f1f2303b4290fa2d7be04e56e2a970c4cc4b417dc761de196edabd49d55c7dc9580db81007c44143e4e3d7e462b3000d23c255122d065",
   "dependencies": {
     "fili": "^2.0.3",
     "p-limit": "^7.3.1",
     "zarrita": "^0.7.3"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "sideEffects": false
+  "packageManager": "pnpm@11.15.1+sha512.81350b07e53c9538a02f1f2303b4290fa2d7be04e56e2a970c4cc4b417dc761de196edabd49d55c7dc9580db81007c44143e4e3d7e462b3000d23c255122d065",
+  "publishConfig": {
+    "access": "public"
+  }
 }

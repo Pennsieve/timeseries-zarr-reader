@@ -12,16 +12,14 @@ serve bytes with HTTP `Range` support. The bundle format is specified and writte
 
 ## Installation
 
-The package is not published yet. Once it is, install it with:
-
 ```sh
 pnpm add @pennsieve/timeseries-zarr-reader
 # or
 npm install @pennsieve/timeseries-zarr-reader
 ```
 
-Until then, consume it from a local checkout (`pnpm build`, then a `link:` or `file:`
-dependency).
+The package is ESM-only and requires Node.js 20 or later. In the browser, use any
+bundler that resolves the `exports` map.
 
 ## Quick start
 
