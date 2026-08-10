@@ -20,8 +20,9 @@ async function loadFileStore(path: string): Promise<Store> {
  * Returns a `Store` for a bundle location, chosen by its scheme or path form.
  *
  * `http://` and `https://` URLs use `FetchStore`. `file://` URLs and absolute filesystem
- * paths, POSIX or Windows drive-letter, use `FileStore`, imported dynamically to keep
- * `node:fs` out of browser bundles. Relative paths and unrecognized schemes throw.
+ * paths, POSIX or Windows drive-letter, use `FileStore`. `FileStore` is imported
+ * dynamically; a browser bundle never loads `node:fs`. Relative paths and unrecognized
+ * schemes throw.
  *
  * Neither built-in store sends credentials. The consumer constructs an authenticating
  * store and passes it as a `Store`.

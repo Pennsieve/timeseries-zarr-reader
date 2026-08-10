@@ -51,7 +51,10 @@ export class RawReadTooLargeError extends Error {
 /** Constructor options for {@link StreamingClient}. */
 export interface StreamingClientOptions {
   readonly store: Store;
-  /** Default cap in bytes on forced-raw reads (15 MB). Overridable per query. */
+  /**
+   * Cap in bytes on forced-raw reads, overridable per query. Defaults to
+   * `MAX_RAW_BYTES`.
+   */
   readonly maxRawBytes?: number;
 }
 
@@ -137,7 +140,8 @@ type SettledRead =
  *
  * Filter state also lives for the client's lifetime. Queries over adjacent windows filter as
  * one continuous signal, whether or not their seam falls on a sample. A jump backwards or a
- * gap wider than a hundred samples restarts the filter for that channel.
+ * gap wider than `FILTER_GAP_RESET_SAMPLES` sample periods restarts the filter for that
+ * channel.
  *
  * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
  */
@@ -166,21 +170,19 @@ export class StreamingClient {
    * order.
    *
    * Each trace reads the coarsest pyramid level whose bins fit within one pixel. A filter,
-   * a montage, or `raw: true` forces the raw level. A forced-raw read that would exceed the
-   * byte cap throws {@link RawReadTooLargeError} before any data is fetched. Unless `raw` is
-   * set, output is resampled onto the pixel grid when one pixel spans more than three
-   * source bins.
+   * a montage, or `raw: true` forces the raw level. A forced-raw read over the byte cap
+   * throws {@link RawReadTooLargeError}. Unless `raw` is set, output is resampled onto the
+   * pixel grid when one pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins.
    *
    * Segments are delivered on bin boundaries, so one may begin before `startUs` or end
-   * after `endUs` by less than one of its own bins. Clipping to the exact window is the
-   * caller's concern. The exception is a filtered segment continuing from the previous query, which
-   * begins at the first sample that query did not return. A window with no overlap yields
-   * empty data, with `startUs` clamped to the channel's extent.
+   * after `endUs` by less than one of its own bins. A filtered segment continuing from the
+   * previous query begins at the first sample that query did not return. A window with no
+   * overlap yields empty data, with `startUs` clamped to the channel's extent.
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
    * unknown channel id, a unit channel, a montage pair whose rates or sample grids differ,
-   * a non-positive `pixelWidthUs`, or an `endUs` before `startUs`. A generator reports
-   * these on the first iteration, not on the call.
+   * a non-positive `pixelWidthUs`, or an `endUs` before `startUs`. Calling `query` does
+   * not throw; rejections arrive on the first iteration.
    */
   async *query(params: QueryOptions): AsyncGenerator<Segment, void, undefined> {
     params.signal?.throwIfAborted();
@@ -379,8 +381,8 @@ export class StreamingClient {
       );
     }
 
-    // Reading the window both channels can serve keeps the two reads index-aligned when
-    // one channel starts or ends inside the other's extent.
+    // Both reads must cover the same time range, even when one channel starts or ends
+    // inside the other's extent.
     const sharedStartUs = Math.max(
       window.startUs,
       lead.info.startUs,

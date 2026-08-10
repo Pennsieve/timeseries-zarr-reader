@@ -49,8 +49,7 @@ export async function firstIndexAtOrAfter(
  * are fetched only when the window holds events and
  * {@link shouldFetchWaveforms} returns true for `pixelWidthUs`. Otherwise
  * `pointsPerEvent` is 0 and `data` is empty. `samplePeriodUs` is the waveform
- * sample period whether or not waveforms were fetched. `isResampled` is always
- * false.
+ * sample period whether or not waveforms were fetched.
  */
 export async function queryUnitChannel(
   store: Store,
@@ -60,7 +59,6 @@ export async function queryUnitChannel(
   opts?: StoreOptions,
 ): Promise<EventBatch> {
   const events = await openTimestamps(store, unit.events.path, opts);
-  // The two bounds are independent, and each search costs log2(n) round trips.
   const [start, end] = await Promise.all([
     firstIndexAtOrAfter(events, window.startUs),
     firstIndexAtOrAfter(events, window.endUs),

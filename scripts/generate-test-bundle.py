@@ -1,6 +1,6 @@
 """Generate test-data/sample.zarr, the committed acceptance-test bundle.
 
-Runs the real writer from a ts-zarr-py checkout. The fixture has the full production
+Runs the writer from a ts-zarr-py checkout. The fixture has the full production
 layout: ZEP2 sharding, Zstd compression, crc32c shard indices, and consolidated
 metadata. The content is deterministic; the acceptance tests in src/client.test.ts and
 src/stores/parity.test.ts state exact expectations against it:

@@ -3,8 +3,8 @@ import type { ChannelInfo } from "./types.js";
 /**
  * Subtracts `secondary` from `lead`, sample by sample.
  *
- * Values stay in physical units, with no sign flip. NaN in either input propagates.
- * Neither input is modified. Throws RangeError when the lengths differ.
+ * NaN in either input propagates. Neither input is modified. Throws RangeError when
+ * the lengths differ.
  */
 export function subtract(
   lead: Float64Array,
@@ -16,7 +16,6 @@ export function subtract(
     );
   }
 
-  // A plain loop, because subtraction runs over millions of raw samples.
   const out = new Float64Array(lead.length);
   for (let i = 0; i < out.length; i++) {
     out[i] = lead[i]! - secondary[i]!;

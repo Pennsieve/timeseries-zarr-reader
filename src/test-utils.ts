@@ -127,9 +127,8 @@ export interface FixtureChannel {
  * Mirrors a real bundle. Paths in `metadata` are flat and relative (`"0"`, `"0/1"`), and each
  * channel group carries its own empty `consolidated_metadata`, as the writer emits.
  *
- * `root` shallow-merges over the root object, for building malformed bundles.
- * `{ zarr_format: 2 }` breaks the format. `{ consolidated_metadata: undefined }` drops the
- * key, since `JSON.stringify` omits undefined values.
+ * `root` shallow-merges over the root object, for building malformed bundles. An
+ * `undefined` value drops its key: `JSON.stringify` omits undefined values.
  */
 export function bundleMetadata(
   channels: FixtureChannel[],

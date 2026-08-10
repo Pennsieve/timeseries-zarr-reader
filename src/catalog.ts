@@ -183,7 +183,7 @@ export interface UnitArrays {
 
 /** One channel of a bundle: its store path, info, and pyramid levels. */
 export interface ChannelEntry {
-  /** Absolute store path of the channel group, not the channel id. */
+  /** Absolute store path of the channel group. */
   readonly path: `/${string}`;
   readonly info: ChannelInfo;
   /** Finest first. Empty for a unit channel. */
@@ -294,8 +294,7 @@ function readUnitArrays(
  * Reads a bundle's root metadata and enumerates its channels and levels.
  *
  * The bundle is read in one request to `/zarr.json`, whose `consolidated_metadata`
- * inlines every descendant's metadata. A missing `consolidated_metadata` is an error,
- * since the tree is never walked.
+ * inlines every descendant's metadata. The store tree is never walked.
  *
  * Levels are returned finest first. A level's layout comes from its rank: rank 1 is raw,
  * rank 2 with a trailing dimension of 2 is a min/max envelope. A unit channel's `events`

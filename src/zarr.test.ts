@@ -8,11 +8,7 @@ import {
 } from "./test-utils.js";
 import { openTimestamps, readBins, readRows } from "./zarr.js";
 
-/**
- * A store of unsharded arrays: a raw level split across two chunks, an envelope level, an
- * int64 level, a rank-3 array, malformed metadata, int64 timestamp arrays, and rank-2 row
- * arrays in float32, float64, and int64.
- */
+/** Unsharded fixture arrays for readBins, openTimestamps, and readRows. */
 const store = createMemoryStore({
   "/raw/zarr.json": arrayMetadata([6], [3], { period_us: 1000 }),
   "/raw/c/0": float32Chunk([1, 2, 3]),
@@ -65,7 +61,7 @@ test("rejects when there is no array at the path", async () => {
 });
 
 test("propagates a failure other than a missing array unchanged", async () => {
-  // Malformed metadata surfaces as a JSON parse error, not a NotFoundError.
+  // Malformed metadata throws a JSON parse error, not a NotFoundError.
   await expect(
     readBins(store, "/malformed", { start: 0, end: 1 }),
   ).rejects.toThrow(/JSON/);

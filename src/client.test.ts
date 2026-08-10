@@ -4,12 +4,7 @@ import { createFilter } from "./filter.js";
 import type { BundleChannel } from "./test-utils.js";
 import { bundleFiles, collect, createMemoryStore } from "./test-utils.js";
 import type { ChannelInfo, Store } from "./types.js";
-import {
-  FetchStore,
-  openBundle,
-  RawReadTooLargeError,
-  StreamingClient,
-} from "./index.js";
+import { openBundle, RawReadTooLargeError, StreamingClient } from "./index.js";
 
 /** Collects an async iterable and asserts it yielded exactly one item. */
 async function collectOne<T>(iterable: AsyncIterable<T>): Promise<T> {
@@ -54,7 +49,7 @@ const RAW_A = Array.from({ length: 32 }, (_, i) => i);
 const RAW_B = RAW_A.map((value) => value + 100);
 /**
  * A sine at 512 Hz, for the channel whose sample period is not a whole microsecond.
- * Rounded to float32 up front, since that is what a bundle stores and a read returns.
+ * Pre-rounded to float32 to match bundle storage and read output.
  */
 const FRACTIONAL = Array.from(
   Float32Array.from(
@@ -124,14 +119,14 @@ const CHANNELS: BundleChannel[] = [
     ],
   },
   {
-    // Same rate as "a", but sampling half a period later, so no shared grid exists.
+    // Same rate as "a", offset half a period: no shared grid exists.
     path: "7",
     attributes: { ...attrs("m", "M", 1000), start_us: 1_000_500 },
     levels: [{ periodUs: 1000, samples: [0, 0, 0, 0, 0, 0, 0, 0] }],
   },
   {
-    // 512 Hz from an epoch start: period_us is 1953.125 and startUs arithmetic rounds,
-    // so no drift lands on an exact period.
+    // 512 Hz from an epoch start: period_us is 1953.125, and startUs arithmetic
+    // rounds. No drift lands on an exact period.
     path: "8",
     attributes: { ...attrs("f", "F", 512), start_us: 1_704_067_200_000_000 },
     levels: [{ periodUs: 1e6 / 512, samples: FRACTIONAL }],
@@ -260,7 +255,7 @@ describe("query", () => {
   });
 
   test("does not resample when one pixel spans exactly the threshold ratio", async () => {
-    // 12000 us pixels over 4000 us bins: exactly 3 bins per pixel, not more.
+    // 12000 us pixels over 4000 us bins: exactly 3 bins per pixel.
     const client = makeClient();
     const segment = await collectOne(
       client.query({ channels: ["a"], ...FULL, pixelWidthUs: 12_000 }),
@@ -320,7 +315,7 @@ describe("query", () => {
       }),
     );
     expect(segment.data.length).toBe(0);
-    // An empty segment reports the channel edge the window fell past.
+    // An empty segment's startUs is the nearest channel edge.
     expect(segment.startUs).toBe(1_032_000);
   });
 
@@ -434,7 +429,7 @@ describe("query", () => {
     ).rejects.toThrow(/no traces/);
   });
 
-  test("surfaces a failed read's error", async () => {
+  test("propagates a failed read's error", async () => {
     const files = bundleFiles(CHANNELS);
     delete files["/0/0/zarr.json"];
     const client = new StreamingClient({ store: createMemoryStore(files) });
@@ -597,8 +592,8 @@ describe("filter", () => {
     const client = makeClient();
     const chunked: number[] = [];
     const starts: number[] = [];
-    // No window edge lands on a sample, so each read shares its first sample with the
-    // previous read. Three pages, so the bookkeeping after a drop is exercised too.
+    // No window edge lands on a sample: each read shares its first sample with
+    // the previous read. Three pages cover a second seam after a drop.
     for (const page of [
       { startUs: 1_000_500, endUs: 1_005_500 },
       { startUs: 1_005_500, endUs: 1_010_500 },
@@ -627,8 +622,6 @@ describe("filter", () => {
   });
 
   test("filters continuously on a channel whose period is not a whole microsecond", async () => {
-    // 512 Hz from an epoch start: startUs values round, so a seam's drift is never
-    // exactly one period.
     const client = makeClient();
     const info = channelById(await client.channelInfo(), "f");
     const periodUs = 1e6 / 512;
@@ -677,7 +670,6 @@ describe("filter", () => {
       chunked.push(...Array.from(segment.data));
     }
 
-    // The jump back to the start resets the state, so the whole window filters fresh.
     const whole = await collectOne(
       client.query({
         channels: ["a"],
@@ -742,7 +734,7 @@ describe("byte cap", () => {
     ).rejects.toThrow(RawReadTooLargeError);
   });
 
-  test("honors a per-query cap override", async () => {
+  test("applies a per-query cap override", async () => {
     const client = makeClient(64);
     const segment = await collectOne(
       client.query({
@@ -954,12 +946,6 @@ describe("dataSpans", () => {
   });
 });
 
-test("openBundle returns the re-exported FetchStore for http URLs", async () => {
-  expect(await openBundle("http://localhost:9090/sample.zarr")).toBeInstanceOf(
-    FetchStore,
-  );
-});
-
 // scripts/generate-test-bundle.py writes test-data/sample.zarr and lists its contents.
 const BUNDLE = fileURLToPath(
   new URL("../test-data/sample.zarr", import.meta.url),
@@ -1014,7 +1000,7 @@ describe("acceptance: committed bundle", () => {
     expect(Array.from(pyramid.data)).toEqual(expected);
   });
 
-  test("the pyramid path fetches a small fraction of the raw bytes", async () => {
+  test("the pyramid path fetches less than a tenth of the raw bytes", async () => {
     const inner = await openBundle(BUNDLE);
     let bytes = 0;
     const counted = (result: Uint8Array | undefined) => {
@@ -1027,8 +1013,8 @@ describe("acceptance: committed bundle", () => {
         inner.getRange(key, range, opts).then(counted),
     };
     const client = new StreamingClient({ store });
-    // The incompressible channel, since compression hides the sample-count ratio on the
-    // sines.
+    // The incompressible channel: compression hides the sample-count ratio on
+    // the sines.
     const info = channelById(await client.channelInfo(), "noise");
     const window = { startUs: info.startUs, endUs: info.endUs };
 

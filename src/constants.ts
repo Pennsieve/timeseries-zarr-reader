@@ -1,7 +1,6 @@
 /**
  * Default byte cap on a forced-raw read, summed across the requested traces and
- * counting both sides of a montage pair. A window that would exceed the cap throws
- * `RawReadTooLargeError` instead of fetching the raw level.
+ * counting both sides of a montage pair.
  */
 export const MAX_RAW_BYTES = 15_000_000;
 

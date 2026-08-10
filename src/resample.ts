@@ -7,8 +7,7 @@ import type { Segment } from "./types.js";
  * reduced to the min and max of each bucket, and envelope input merges pairs (smallest
  * min, largest max). A trailing partial bucket is kept. Empty input yields empty data.
  *
- * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN], so a
- * gap in the input stays a gap in the output.
+ * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN].
  *
  * The result is envelope data. `isMinMax` is true and `samplePeriodUs` becomes
  * `pixelWidthUs`. Throws RangeError when `pixelWidthUs < samplePeriodUs`.

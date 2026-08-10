@@ -1,6 +1,6 @@
 /**
- * Types for `fili`, which ships none. Declares only the surface the reader
- * uses. Parameter names come from fili.js.
+ * Type declarations for `fili`, which provides none. Declares only the
+ * surface the reader uses. Parameter names come from fili.js.
  *
  * Bandpass and bandstop take a center frequency and a width in octaves, not
  * two edge frequencies. Edges passed under other names silently yield null
@@ -12,7 +12,8 @@
 declare module "fili" {
   /**
    * A biquad's coefficients plus its delay registers. Produced by the cascade
-   * builders and consumed by the filter, opaque in between.
+   * builders and consumed by the filter constructor. Callers do not read its
+   * fields.
    */
   interface BiquadCoeffs {
     a: number[];

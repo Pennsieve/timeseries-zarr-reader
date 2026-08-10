@@ -263,7 +263,7 @@ test("keeps every sample when the next segment starts one period later", () => {
   const { signal, first, second, secondStartUs } = split();
   const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
 
-  // A one-sample hole rather than a repeat, so the segment must come back whole.
+  // A one-sample hole, not a repeat: no sample is dropped.
   const session = createFilterSession();
   session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
   const out = session.apply(
@@ -281,8 +281,6 @@ test("clears state when a segment repeats two samples", () => {
   const { signal, first, secondStartUs } = split();
   const overlapped = signal.subarray(first.length - 2);
 
-  // Only a single-sample repeat is dropped. Anything wider is a jump back, and the
-  // caller gets the whole segment.
   const session = createFilterSession();
   session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
   const out = session.apply(
@@ -315,7 +313,6 @@ test("returns empty for a segment holding only the repeated sample", () => {
   );
   expect(out.data.length).toBe(0);
 
-  // The state is unchanged, so the next segment continues from the first.
   const next = session.apply(
     segment("c", secondStartUs, signal.subarray(first.length)),
     LOWPASS,
@@ -405,7 +402,7 @@ test("clear resets all held state", () => {
   expectSamplesClose(out.data, createFilter(LOWPASS, RATE_HZ).process(second));
 });
 
-test("passes an empty segment through without disturbing the state", () => {
+test("passes an empty segment through and leaves the state unchanged", () => {
   const { signal, first, second, secondStartUs } = split();
   const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
 

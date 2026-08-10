@@ -1,11 +1,10 @@
-// fili is CommonJS. Native Node ESM guarantees only the default export for CJS modules.
 import fili from "fili";
 import type { FilterSpec, Segment } from "./types.js";
 import { FILTER_GAP_RESET_SAMPLES } from "./constants.js";
 
 const { CalcCascades, IirFilter } = fili;
 
-/** Maximum filter order the cascade builder accepts. Above this it silently clamps. */
+/** Maximum accepted filter order. */
 const MAX_ORDER = 12;
 
 /**
@@ -17,10 +16,7 @@ const MAX_ORDER = 12;
 export interface Filter {
   /** Filters one chunk of samples in order and returns a new array. The input is not modified. */
   process(samples: Float64Array): Float64Array;
-  /**
-   * Discards state carried from earlier chunks, so the next `process` call
-   * starts fresh.
-   */
+  /** Discards state carried from earlier chunks. */
   reset(): void;
 }
 
@@ -62,7 +58,6 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
       `lowHz must be below highHz (got ${spec.lowHz} and ${spec.highHz})`,
     );
   }
-  // The builder takes a center frequency and a width in octaves, not the two edges.
   const params = {
     ...shared,
     Fc: Math.sqrt(spec.lowHz * spec.highHz),
@@ -77,9 +72,9 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
  * Builds a Butterworth filter for one channel.
  *
  * Every frequency in `spec` is read against `rateHz`, the channel's native
- * sampling rate. Samples stay in physical units: no unit conversion, no gain.
- * For bandpass and bandstop, `lowHz` and `highHz` are the band edges, and
- * attenuation at those nominal edges deepens with `order`.
+ * sampling rate. The filter applies no gain. For bandpass and bandstop,
+ * `lowHz` and `highHz` are the band edges, and attenuation at those nominal
+ * edges deepens with `order`.
  *
  * Throws a RangeError for an `order` that is not an integer from 1 to 12, a
  * frequency not strictly between 0 and half `rateHz`, or a `lowHz` at or above

@@ -1,8 +1,8 @@
 /**
  * A contiguous run of one trace's data over a queried window.
  *
- * Timestamps are UTC microseconds. Values are in physical units, and the
- * reader never flips signs.
+ * Timestamps are UTC microseconds. Values are in physical units; the reader
+ * does not negate them.
  */
 export interface Segment {
   /** Channel id the segment belongs to (a compound key when montaged). */
@@ -11,7 +11,7 @@ export interface Segment {
   readonly startUs: number;
   /** Time between consecutive samples (raw) or bins (envelope). */
   readonly samplePeriodUs: number;
-  /** True when `data` holds min/max envelope pairs rather than raw samples. */
+  /** True when `data` holds min/max envelope pairs. */
   readonly isMinMax: boolean;
   /**
    * Raw samples, or interleaved `[min, max, min, max, ...]` pairs when
@@ -98,10 +98,7 @@ export interface EventBatch {
   readonly samplePeriodUs: number;
   /** Samples per spike waveform. 0 when waveforms were not fetched. */
   readonly pointsPerEvent: number;
-  /**
-   * True when the waveforms were resampled. Always false, since waveforms are
-   * returned as stored.
-   */
+  /** Always false: waveforms are returned as stored. */
   readonly isResampled: boolean;
   /** Timestamps of the events, ascending. */
   readonly times: Float64Array;
@@ -129,8 +126,7 @@ export interface StoreOptions {
  * authentication and transport.
  *
  * `getRange` is required. Every bundle array is sharded, and reading a shard
- * fetches its index and then the inner chunk as byte ranges. A store limited
- * to whole-key reads can serve metadata but not data.
+ * fetches its index and then the inner chunk as byte ranges.
  */
 export interface Store {
   get(key: `/${string}`, opts?: StoreOptions): Promise<Uint8Array | undefined>;

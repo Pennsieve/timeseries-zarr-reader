@@ -3,7 +3,7 @@ import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { ByteRange, Store, StoreOptions } from "../types.js";
 
-/** Returns whether an error is the filesystem's ENOENT, the one failure that means an absent key. */
+/** Returns whether an error is ENOENT, which maps to an absent key. */
 function isMissing(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -70,7 +70,7 @@ export class FileStore implements Store {
       const buffer = new Uint8Array(length);
       const { bytesRead } = await handle.read(buffer, 0, length, position);
       opts?.signal?.throwIfAborted();
-      // A range past the end of the file returns the bytes present, not zero padding.
+      // A range past the end of the file returns only the bytes present.
       return buffer.subarray(0, bytesRead);
     } catch (error) {
       if (isMissing(error)) {
