@@ -5,13 +5,18 @@ import type {
   UnitArrays,
 } from "./catalog.js";
 import { binRange, readCatalog, selectLevel } from "./catalog.js";
-import { MAX_RAW_BYTES, RESAMPLE_PIXEL_RATIO } from "./constants.js";
+import {
+  MAX_CACHE_BYTES,
+  MAX_RAW_BYTES,
+  RESAMPLE_PIXEL_RATIO,
+} from "./constants.js";
 import type { FetchLimit } from "./fetch.js";
 import { createFetchLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
 import { createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
 import { resampleToPixels } from "./resample.js";
+import { createCachingStore, createConsolidatedStore } from "./stores/cache.js";
 import type {
   ChannelInfo,
   EventBatch,
@@ -56,6 +61,11 @@ export interface StreamingClientOptions {
    * `MAX_RAW_BYTES`.
    */
   readonly maxRawBytes?: number;
+  /**
+   * Cap in bytes on the cache of store responses. Defaults to `MAX_CACHE_BYTES`. Zero
+   * disables the cache, and the bundle root is then read twice on open.
+   */
+  readonly maxCacheBytes?: number;
 }
 
 /** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
@@ -132,6 +142,16 @@ interface PlannedTrace {
 type SettledRead =
   { ok: true; data: Float64Array } | { ok: false; error: unknown };
 
+/** A bundle opened for reading. */
+interface Bundle {
+  readonly catalog: BundleCatalog;
+  /**
+   * The store the bundle's arrays are read through. Array metadata comes from the
+   * root's consolidated metadata, and responses are cached.
+   */
+  readonly store: Store;
+}
+
 /**
  * Reads one bundle by channel id and time window.
  *
@@ -144,24 +164,28 @@ type SettledRead =
  * channel.
  *
  * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
+ *
+ * Store responses are cached for the client's lifetime, bounded by `maxCacheBytes`.
  */
 export class StreamingClient {
   readonly #store: Store;
   readonly #maxRawBytes: number;
+  readonly #maxCacheBytes: number;
   readonly #limit: FetchLimit;
   readonly #filters: FilterSession;
-  #catalog: Promise<BundleCatalog> | undefined;
+  #bundle: Promise<Bundle> | undefined;
 
   constructor(options: StreamingClientOptions) {
     this.#store = options.store;
     this.#maxRawBytes = options.maxRawBytes ?? MAX_RAW_BYTES;
+    this.#maxCacheBytes = options.maxCacheBytes ?? MAX_CACHE_BYTES;
     this.#limit = createFetchLimit();
     this.#filters = createFilterSession();
   }
 
   /** Returns per-channel info for every channel in the bundle. Returned objects are copies. */
   async channelInfo(): Promise<ChannelInfo[]> {
-    const catalog = await this.#loadCatalog();
+    const { catalog } = await this.#loadBundle();
     return catalog.channels.map((entry) => ({ ...entry.info }));
   }
 
@@ -195,7 +219,7 @@ export class StreamingClient {
     requireOneTraceSource(channels, montage);
 
     const forceRaw = params.filter !== undefined || montage.length > 0 || raw;
-    const catalog = await this.#loadCatalog();
+    const { catalog, store } = await this.#loadBundle();
     const opts = toStoreOptions(params.signal);
 
     const traces =
@@ -212,11 +236,11 @@ export class StreamingClient {
     // Settling each read up front avoids unhandled rejections when iteration stops early.
     const started = traces.map((trace) => ({
       trace,
-      lead: this.#startRead(trace.read, opts),
+      lead: this.#startRead(store, trace.read, opts),
       secondary:
         trace.secondaryRead === undefined
           ? undefined
-          : this.#startRead(trace.secondaryRead, opts),
+          : this.#startRead(store, trace.secondaryRead, opts),
     }));
 
     for (const { trace, lead, secondary } of started) {
@@ -258,12 +282,12 @@ export class StreamingClient {
     params.signal?.throwIfAborted();
     requirePixelWidth(params.pixelWidthUs);
     requireWindow(params.startUs, params.endUs);
-    const catalog = await this.#loadCatalog();
+    const { catalog, store } = await this.#loadBundle();
     const opts = toStoreOptions(params.signal);
 
     for (const id of params.channels) {
       const unit = unitArrays(catalog, id);
-      yield await queryUnitChannel(this.#store, id, unit, params, opts);
+      yield await queryUnitChannel(store, id, unit, params, opts);
     }
   }
 
@@ -281,7 +305,7 @@ export class StreamingClient {
   ): Promise<Array<[startUs: number, endUs: number]>> {
     params.signal?.throwIfAborted();
     requireWindow(params.startUs, params.endUs);
-    const catalog = await this.#loadCatalog();
+    const { catalog, store } = await this.#loadBundle();
     const opts = toStoreOptions(params.signal);
     const entry = continuousEntry(catalog, params.channel);
     // Levels are sorted finest-first, and a continuous channel has at least one.
@@ -289,7 +313,7 @@ export class StreamingClient {
 
     const read = planRead(entry, level, params);
     const data = await this.#limit(() =>
-      readBins(this.#store, level.path, read.range, opts),
+      readBins(store, level.path, read.range, opts),
     );
 
     const gapThresholdUs = params.gapThresholdUs ?? 0;
@@ -323,14 +347,25 @@ export class StreamingClient {
     return spans;
   }
 
-  #loadCatalog(): Promise<BundleCatalog> {
-    return (this.#catalog ??= readCatalog(this.#store).catch(
-      (error: unknown) => {
-        // Clear the cached promise on failure so the next call retries.
-        this.#catalog = undefined;
-        throw error;
-      },
-    ));
+  #loadBundle(): Promise<Bundle> {
+    return (this.#bundle ??= this.#openBundle().catch((error: unknown) => {
+      // Clear the cached promise on failure so the next call retries.
+      this.#bundle = undefined;
+      throw error;
+    }));
+  }
+
+  /** Reads the catalog and layers the store the bundle's arrays are read through. */
+  async #openBundle(): Promise<Bundle> {
+    const cached =
+      this.#maxCacheBytes > 0
+        ? createCachingStore(this.#store, this.#maxCacheBytes)
+        : this.#store;
+    // The catalog needs the root group's consolidated_metadata block, which the
+    // consolidated store replaces with a plain group. Both read `/zarr.json`, and the
+    // cache makes the second read free.
+    const catalog = await readCatalog(cached);
+    return { catalog, store: await createConsolidatedStore(cached) };
   }
 
   /** Plans the trace for one channel. */
@@ -404,12 +439,11 @@ export class StreamingClient {
 
   /** Starts one read under the in-flight cap. The returned promise never rejects. */
   #startRead(
+    store: Store,
     read: PlannedRead,
     opts: StoreOptions | undefined,
   ): Promise<SettledRead> {
-    return this.#limit(() =>
-      readBins(this.#store, read.level.path, read.range, opts),
-    )
+    return this.#limit(() => readBins(store, read.level.path, read.range, opts))
       .then((data): SettledRead => ({ ok: true, data }))
       .catch((error: unknown): SettledRead => ({ ok: false, error }));
   }

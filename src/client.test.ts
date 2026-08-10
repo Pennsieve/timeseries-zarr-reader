@@ -2,7 +2,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { createFilter } from "./filter.js";
 import type { BundleChannel } from "./test-utils.js";
-import { bundleFiles, collect, createMemoryStore } from "./test-utils.js";
+import {
+  bundleFiles,
+  collect,
+  createCountingStore,
+  createMemoryStore,
+} from "./test-utils.js";
 import type { ChannelInfo, Store } from "./types.js";
 import { openBundle, RawReadTooLargeError, StreamingClient } from "./index.js";
 
@@ -29,6 +34,16 @@ function channelById(infos: readonly ChannelInfo[], id: string): ChannelInfo {
     throw new Error(`bundle has no channel ${id}`);
   }
   return info;
+}
+
+/** Wraps a store so every read of `key` rejects, standing in for a transport failure. */
+function withFailingKey(store: Store, key: `/${string}`): Store {
+  const fail = () => Promise.reject(new Error(`read of ${key} failed`));
+  return {
+    get: (path, opts) => (path === key ? fail() : store.get(path, opts)),
+    getRange: (path, range, opts) =>
+      path === key ? fail() : store.getRange(path, range, opts),
+  };
 }
 
 const attrs = (
@@ -430,21 +445,25 @@ describe("query", () => {
   });
 
   test("propagates a failed read's error", async () => {
-    const files = bundleFiles(CHANNELS);
-    delete files["/0/0/zarr.json"];
-    const client = new StreamingClient({ store: createMemoryStore(files) });
+    const store = withFailingKey(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      "/0/0/c/0",
+    );
+    const client = new StreamingClient({ store });
 
     await expect(
       collect(client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 })),
-    ).rejects.toThrow(/no array at \/0\/0/);
+    ).rejects.toThrow(/read of \/0\/0\/c\/0 failed/);
   });
 
   test("produces no unhandled rejection when iteration stops early", async () => {
     // The second trace's read fails after the generator is dropped. An unhandled
     // rejection would fail the run.
-    const files = bundleFiles(CHANNELS);
-    delete files["/1/0/zarr.json"];
-    const client = new StreamingClient({ store: createMemoryStore(files) });
+    const store = withFailingKey(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      "/1/0/c/0",
+    );
+    const client = new StreamingClient({ store });
 
     const iterator = client
       .query({
@@ -943,6 +962,84 @@ describe("dataSpans", () => {
     await expect(
       client.dataSpans({ channel: "g", ...FULL, signal: controller.signal }),
     ).rejects.toThrow(/abort/i);
+  });
+});
+
+describe("response cache", () => {
+  test("reads no array metadata key beyond the bundle root", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+
+    await collect(
+      client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 }),
+    );
+
+    const metadataKeys = [...counting.reads.keys()].filter((key) =>
+      key.endsWith("zarr.json"),
+    );
+    expect(metadataKeys).toEqual(["/zarr.json"]);
+  });
+
+  test("reads the bundle root once across queries", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+
+    await client.channelInfo();
+    await collect(
+      client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 }),
+    );
+
+    expect(counting.reads.get("/zarr.json")).toBe(1);
+  });
+
+  test("serves a repeated query from the cache", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+    const query = { channels: ["a"], ...FULL, pixelWidthUs: 1000 };
+
+    await collect(client.query(query));
+    const afterFirst = counting.total();
+    await collect(client.query(query));
+
+    expect(counting.total()).toBe(afterFirst);
+  });
+
+  test("reads through to the store when the cache is disabled", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({
+      store: counting.store,
+      maxCacheBytes: 0,
+    });
+    const query = { channels: ["a"], ...FULL, pixelWidthUs: 1000 };
+
+    await collect(client.query(query));
+    const afterFirst = counting.total();
+    await collect(client.query(query));
+
+    expect(counting.total()).toBeGreaterThan(afterFirst);
+  });
+
+  test("returns the same samples whether or not the cache is on", async () => {
+    const files = bundleFiles(CHANNELS);
+    const query = { channels: ["a", "b"], ...FULL, pixelWidthUs: 1000 };
+    const cached = new StreamingClient({ store: createMemoryStore(files) });
+    const uncached = new StreamingClient({
+      store: createMemoryStore(files),
+      maxCacheBytes: 0,
+    });
+
+    const fromCached = await collect(cached.query(query));
+    const fromUncached = await collect(uncached.query(query));
+
+    expect(fromCached).toEqual(fromUncached);
   });
 });
 

@@ -8,6 +8,12 @@ export const MAX_RAW_BYTES = 15_000_000;
 export const MAX_INFLIGHT_FETCHES = 8;
 
 /**
+ * Default byte cap on the response cache a client holds over its store. Chunks span
+ * more time than one query window, so adjacent windows read the same chunk.
+ */
+export const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+
+/**
  * Largest gap, in samples, that a filter carries its state across. A chunk
  * starting further than this past the previous chunk's end is filtered from a
  * cleared state.

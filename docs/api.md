@@ -6,8 +6,10 @@ windows are half-open, `[startUs, endUs)`.
 
 ## `new StreamingClient(options)`
 
-Takes `{ store, maxRawBytes? }`. `store` is any object implementing the `Store` type.
-`maxRawBytes` caps raw-level reads, 15 MB by default, and each query can override it.
+Takes `{ store, maxRawBytes?, maxCacheBytes? }`. `store` is any object implementing the
+`Store` type. `maxRawBytes` caps raw-level reads, 15 MB by default, and each query can
+override it. `maxCacheBytes` caps the client's cache of store responses, 64 MiB by
+default; zero reads through to the store every time.
 
 ## `channelInfo()`
 
@@ -55,6 +57,20 @@ the samples requested, summed across traces, and both sides of a montage pair co
 
 A read over the cap rejects with `RawReadTooLargeError` before fetching anything. The
 error carries `requestedBytes` and `maxBytes`. Narrow the window or raise `maxRawBytes`.
+
+### The response cache
+
+A client caches the store responses it reads, bounded by `maxCacheBytes` and evicted
+least recently used first. Bundles are immutable, so a hit is never revalidated.
+
+An inner chunk covers more time than one query window, so windows that pan or page
+across a bundle read the same chunks. The cache is what keeps those reads off the
+network. Sizing it below one window's working set makes every window evict the one
+before it, so raise it rather than leave it thrashing.
+
+Array metadata does not go through the cache at all. The client reads the root
+`zarr.json` once and serves every array's metadata out of its consolidated block, so a
+query fetches chunk bytes and nothing else.
 
 ### Delivery boundaries
 

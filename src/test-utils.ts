@@ -43,6 +43,58 @@ export function createMemoryStore(
   };
 }
 
+/** A store that tallies the reads reaching it, keyed by store key. */
+export interface CountingStore {
+  readonly store: Store;
+  /** Reads per key, counting whole-key and ranged reads together. */
+  readonly reads: Map<string, number>;
+  /** Total reads across every key. */
+  total(): number;
+}
+
+/** Wraps a store so tests can count the reads it does not serve from elsewhere. */
+export function createCountingStore(inner: Store): CountingStore {
+  const reads = new Map<string, number>();
+  const tally = (key: string): void => {
+    reads.set(key, (reads.get(key) ?? 0) + 1);
+  };
+
+  return {
+    store: {
+      get: (key, opts) => {
+        tally(key);
+        return inner.get(key, opts);
+      },
+      getRange: (key, range, opts) => {
+        tally(key);
+        return inner.getRange(key, range, opts);
+      },
+    },
+    reads,
+    total: () => [...reads.values()].reduce((sum, n) => sum + n, 0),
+  };
+}
+
+/** The metadata node for one unsharded, uncompressed little-endian array. */
+function arrayNode(
+  shape: number[],
+  chunkShape: number[],
+  attributes: Record<string, unknown>,
+  dataType: string,
+): Record<string, unknown> {
+  return {
+    zarr_format: 3,
+    node_type: "array",
+    shape,
+    data_type: dataType,
+    chunk_grid: { name: "regular", configuration: { chunk_shape: chunkShape } },
+    chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
+    codecs: [{ name: "bytes", configuration: { endian: "little" } }],
+    fill_value: 0,
+    attributes,
+  };
+}
+
 /**
  * Builds `zarr.json` metadata for one unsharded, uncompressed little-endian array.
  *
@@ -54,17 +106,7 @@ export function arrayMetadata(
   attributes: Record<string, unknown> = {},
   dataType = "float32",
 ): string {
-  return JSON.stringify({
-    zarr_format: 3,
-    node_type: "array",
-    shape,
-    data_type: dataType,
-    chunk_grid: { name: "regular", configuration: { chunk_shape: chunkShape } },
-    chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
-    codecs: [{ name: "bytes", configuration: { endian: "little" } }],
-    fill_value: 0,
-    attributes,
-  });
+  return JSON.stringify(arrayNode(shape, chunkShape, attributes, dataType));
 }
 
 /** Encodes values as one chunk of little-endian float32 bytes. */
@@ -149,24 +191,22 @@ export function bundleMetadata(
     };
 
     (channel.levels ?? []).forEach((level, index) => {
-      metadata[`${channel.path}/${index}`] = {
-        attributes: { period_us: level.periodUs },
-        zarr_format: 3,
-        node_type: "array",
-        shape: level.shape,
-        data_type: "float32",
-      };
+      metadata[`${channel.path}/${index}`] = arrayNode(
+        level.shape,
+        level.shape,
+        { period_us: level.periodUs },
+        "float32",
+      );
     });
 
     for (const [name, spec] of Object.entries(channel.extraArrays ?? {})) {
       const array = Array.isArray(spec) ? { shape: spec } : spec;
-      metadata[`${channel.path}/${name}`] = {
-        attributes: array.attributes ?? {},
-        zarr_format: 3,
-        node_type: "array",
-        shape: array.shape,
-        data_type: array.dataType ?? "float32",
-      };
+      metadata[`${channel.path}/${name}`] = arrayNode(
+        array.shape,
+        array.shape,
+        array.attributes ?? {},
+        array.dataType ?? "float32",
+      );
     }
   }
 
