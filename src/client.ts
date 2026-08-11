@@ -143,6 +143,11 @@ interface PlannedRead {
 interface PlannedTrace {
   readonly channel: string;
   readonly rateHz: number;
+  /**
+   * Channel start time, the origin of the resample bucket grid. A montage carries the
+   * lead channel's.
+   */
+  readonly channelStartUs: number;
   readonly read: PlannedRead;
   /** Second read of a montage pair. Its samples are subtracted from `read`'s. */
   readonly secondaryRead?: PlannedRead;
@@ -206,7 +211,9 @@ export class StreamingClient {
    * Each trace reads the coarsest pyramid level whose bins fit within one pixel. A filter,
    * a montage, or `raw: true` forces the raw level. A forced-raw read over the byte cap
    * throws {@link RawReadTooLargeError}. Unless `raw` is set, output is resampled onto the
-   * pixel grid when one pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins.
+   * pixel grid when one pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins. That
+   * grid is anchored at the channel start, so every window over a channel resamples onto
+   * the same buckets.
    *
    * Segments are delivered on bin boundaries, so one may begin before `startUs` or end
    * after `endUs` by less than one of its own bins. A filtered segment continuing from the
@@ -273,7 +280,11 @@ export class StreamingClient {
         !raw &&
         params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
       ) {
-        segment = resampleToPixels(segment, params.pixelWidthUs);
+        segment = resampleToPixels(
+          segment,
+          params.pixelWidthUs,
+          trace.channelStartUs,
+        );
       }
       yield segment;
     }
@@ -395,6 +406,7 @@ export class StreamingClient {
     return {
       channel: id,
       rateHz: entry.info.rateHz,
+      channelStartUs: entry.info.startUs,
       read: planRead(entry, level, params),
     };
   }
@@ -445,6 +457,7 @@ export class StreamingClient {
     return {
       channel: montageChannelKey(lead.info, secondary.info),
       rateHz: lead.info.rateHz,
+      channelStartUs: lead.info.startUs,
       read: planRead(lead, leadRaw, shared),
       secondaryRead: planRead(secondary, secondaryRaw, shared),
     };

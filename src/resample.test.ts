@@ -9,7 +9,7 @@ const envelope = (data: number[], samplePeriodUs = 1000) =>
   makeSegment({ samplePeriodUs, isMinMax: true, data: new Float64Array(data) });
 
 test("reduces raw samples to one min/max pair per pixel", () => {
-  const out = resampleToPixels(raw([5, 1, 2, 8]), 2000);
+  const out = resampleToPixels(raw([5, 1, 2, 8]), 2000, 0);
   expect(Array.from(out.data)).toEqual([1, 5, 2, 8]);
   expect(out.isMinMax).toBe(true);
   expect(out.samplePeriodUs).toBe(2000);
@@ -19,51 +19,55 @@ test("reduces raw samples to one min/max pair per pixel", () => {
 
 test("groups bins by time when the bins-per-pixel ratio is not an integer", () => {
   // 2.5 bins per pixel: bins 0-2 fall in pixel 0, bins 3-4 in pixel 1.
-  const out = resampleToPixels(raw([3, 1, 4, 1, 5]), 2500);
+  const out = resampleToPixels(raw([3, 1, 4, 1, 5]), 2500, 0);
   expect(Array.from(out.data)).toEqual([1, 4, 1, 5]);
   expect(out.samplePeriodUs).toBe(2500);
 });
 
 test("merges envelope pairs by smallest min and largest max", () => {
-  const out = resampleToPixels(envelope([10, 20, 5, 15, 30, 40, 8, 50]), 2000);
+  const out = resampleToPixels(
+    envelope([10, 20, 5, 15, 30, 40, 8, 50]),
+    2000,
+    0,
+  );
   expect(Array.from(out.data)).toEqual([5, 20, 8, 50]);
   expect(out.isMinMax).toBe(true);
 });
 
 test("emits a pair per sample when the pixel grid matches the sample period", () => {
-  const out = resampleToPixels(raw([7, 9]), 1000);
+  const out = resampleToPixels(raw([7, 9]), 1000, 0);
   expect(Array.from(out.data)).toEqual([7, 7, 9, 9]);
   expect(out.samplePeriodUs).toBe(1000);
 });
 
 test("passes envelope pairs through when the pixel grid matches the bin period", () => {
-  const out = resampleToPixels(envelope([1, 2, 3, 4]), 1000);
+  const out = resampleToPixels(envelope([1, 2, 3, 4]), 1000, 0);
   expect(Array.from(out.data)).toEqual([1, 2, 3, 4]);
   expect(out.samplePeriodUs).toBe(1000);
 });
 
 test("keeps a trailing pixel covering less than a full pixel of time", () => {
-  const out = resampleToPixels(raw([1, 2, 3, 4, 5]), 2000);
+  const out = resampleToPixels(raw([1, 2, 3, 4, 5]), 2000, 0);
   expect(Array.from(out.data)).toEqual([1, 2, 3, 4, 5, 5]);
 });
 
 test("skips non-finite values within a pixel", () => {
-  const out = resampleToPixels(raw([NaN, 3, Infinity, 7]), 2000);
+  const out = resampleToPixels(raw([NaN, 3, Infinity, 7]), 2000, 0);
   expect(Array.from(out.data)).toEqual([3, 3, 7, 7]);
 });
 
 test("skips non-finite envelope pairs when merging", () => {
-  const out = resampleToPixels(envelope([NaN, NaN, 5, 15]), 2000);
+  const out = resampleToPixels(envelope([NaN, NaN, 5, 15]), 2000, 0);
   expect(Array.from(out.data)).toEqual([5, 15]);
 });
 
 test("yields NaN for a pixel containing only non-finite values", () => {
-  const out = resampleToPixels(raw([NaN, NaN, 2, 6]), 2000);
+  const out = resampleToPixels(raw([NaN, NaN, 2, 6]), 2000, 0);
   expect(Array.from(out.data)).toEqual([NaN, NaN, 2, 6]);
 });
 
 test("returns empty data for empty input", () => {
-  const out = resampleToPixels(raw([]), 2000);
+  const out = resampleToPixels(raw([]), 2000, 0);
   expect(out.data.length).toBe(0);
   expect(out.isMinMax).toBe(true);
   expect(out.samplePeriodUs).toBe(2000);
@@ -71,5 +75,41 @@ test("returns empty data for empty input", () => {
 });
 
 test("throws when pixelWidthUs is narrower than the sample period", () => {
-  expect(() => resampleToPixels(raw([1, 2]), 500)).toThrow(RangeError);
+  expect(() => resampleToPixels(raw([1, 2]), 500, 0)).toThrow(RangeError);
+});
+
+test("snaps the output start down to the anchor grid", () => {
+  const out = resampleToPixels(
+    makeSegment({ startUs: 5000, data: new Float64Array([5, 1, 2, 8]) }),
+    2000,
+    0,
+  );
+  expect(out.startUs).toBe(4000);
+  expect(Array.from(out.data)).toEqual([5, 5, 1, 2, 8, 8]);
+});
+
+test("lands windows split mid-bucket on one shared grid", () => {
+  const whole = resampleToPixels(
+    makeSegment({ data: new Float64Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) }),
+    2500,
+    0,
+  );
+  const left = resampleToPixels(
+    makeSegment({ data: new Float64Array([0, 1, 2, 3, 4, 5]) }),
+    2500,
+    0,
+  );
+  const right = resampleToPixels(
+    makeSegment({ startUs: 6000, data: new Float64Array([6, 7, 8, 9]) }),
+    2500,
+    0,
+  );
+
+  expect(Array.from(whole.data)).toEqual([0, 2, 3, 4, 5, 7, 8, 9]);
+  expect(left.startUs).toBe(0);
+  expect(Array.from(left.data)).toEqual([0, 2, 3, 4, 5, 5]);
+  // The bucket straddling the split starts at 5000 in both windows. Merging its
+  // two partial pairs reproduces the whole-signal bucket.
+  expect(right.startUs).toBe(5000);
+  expect(Array.from(right.data)).toEqual([6, 7, 8, 9]);
 });
