@@ -4,7 +4,9 @@ import {
   createCachingStore,
   createCoalescingStore,
   createConsolidatedStore,
+  createDedupingStore,
 } from "./cache.js";
+import type { Store } from "../types.js";
 import {
   bundleMetadata,
   createCountingStore,
@@ -126,6 +128,141 @@ describe("createCachingStore", () => {
     await cached.get("/a");
 
     expect(reads.get("/a")).toBe(2);
+  });
+});
+
+describe("createDedupingStore", () => {
+  /** A store whose reads settle only when the test releases them. */
+  function gatedStore(): {
+    store: Store;
+    reads: number;
+    release: (value?: Uint8Array) => void;
+    fail: (error: Error) => void;
+  } {
+    const pending: Array<{
+      resolve: (v: Uint8Array | undefined) => void;
+      reject: (e: Error) => void;
+    }> = [];
+    const queue = (): Promise<Uint8Array | undefined> =>
+      new Promise<Uint8Array | undefined>((resolve, reject) => {
+        state.reads += 1;
+        pending.push({ resolve, reject });
+      });
+    const state = {
+      store: { get: queue, getRange: queue },
+      reads: 0,
+      release: (value: Uint8Array = bytes(4)) => {
+        for (const p of pending.splice(0)) p.resolve(value);
+      },
+      fail: (error: Error) => {
+        for (const p of pending.splice(0)) p.reject(error);
+      },
+    };
+    return state;
+  }
+
+  test("collapses concurrent reads of the same range into one", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+
+    const both = Promise.all([
+      deduped.getRange("/0/1/c/0", { offset: 0, length: 8 }),
+      deduped.getRange("/0/1/c/0", { offset: 0, length: 8 }),
+    ]);
+    expect(gate.reads).toBe(1);
+    gate.release(bytes(8));
+    const [first, second] = await both;
+
+    expect(first).toHaveLength(8);
+    expect(second).toHaveLength(8);
+  });
+
+  test("collapses concurrent whole-key reads into one", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+
+    const both = Promise.all([
+      deduped.get("/zarr.json"),
+      deduped.get("/zarr.json"),
+    ]);
+    expect(gate.reads).toBe(1);
+    gate.release();
+    await both;
+  });
+
+  test("keeps distinct ranges and distinct keys separate", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+
+    const all = Promise.all([
+      deduped.getRange("/a", { offset: 0, length: 8 }),
+      deduped.getRange("/a", { offset: 8, length: 8 }),
+      deduped.getRange("/a", { suffixLength: 8 }),
+      deduped.getRange("/b", { offset: 0, length: 8 }),
+    ]);
+    expect(gate.reads).toBe(4);
+    gate.release();
+    await all;
+  });
+
+  test("reads again once the shared read has settled", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+
+    const first = deduped.get("/zarr.json");
+    gate.release();
+    await first;
+    const second = deduped.get("/zarr.json");
+    gate.release();
+    await second;
+
+    expect(gate.reads).toBe(2);
+  });
+
+  test("one caller aborting leaves the others unaffected", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+    const quitter = new AbortController();
+
+    const abandoned = deduped.get("/zarr.json", { signal: quitter.signal });
+    const kept = deduped.get("/zarr.json");
+    expect(gate.reads).toBe(1);
+
+    quitter.abort();
+    await expect(abandoned).rejects.toThrow();
+    gate.release(bytes(8));
+
+    expect(await kept).toHaveLength(8);
+  });
+
+  test("an already-aborted caller rejects without reading", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      deduped.get("/zarr.json", { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(gate.reads).toBe(0);
+  });
+
+  test("a failed shared read rejects every caller and is not retained", async () => {
+    const gate = gatedStore();
+    const deduped = createDedupingStore(gate.store);
+
+    const both = Promise.allSettled([
+      deduped.get("/zarr.json"),
+      deduped.get("/zarr.json"),
+    ]);
+    gate.fail(new Error("transport down"));
+    const results = await both;
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+
+    const retry = deduped.get("/zarr.json");
+    gate.release();
+    await retry;
+    expect(gate.reads).toBe(2);
   });
 });
 

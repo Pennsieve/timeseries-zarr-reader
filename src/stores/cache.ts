@@ -3,7 +3,7 @@ import {
   withConsolidatedMetadata,
   withRangeCoalescing,
 } from "zarrita";
-import type { Store } from "../types.js";
+import type { ByteRange, Store } from "../types.js";
 
 /**
  * A bounded store of response bytes, keyed by request.
@@ -71,6 +71,93 @@ export function createByteCache(maxBytes: number): ByteCache {
         drop(oldest);
       }
     },
+  };
+}
+
+/** Identifies the bytes a read asks for, so two callers asking for the same ones match. */
+function readKey(path: string, range?: ByteRange): string {
+  if (range === undefined) {
+    return path;
+  }
+  return "suffixLength" in range
+    ? `${path}\0s:${range.suffixLength}`
+    : `${path}\0r:${range.offset}:${range.length}`;
+}
+
+/**
+ * Resolves with `pending`, or rejects as soon as `signal` aborts.
+ *
+ * Leaves `pending` running, since other callers may still be waiting on it.
+ */
+function raceAbort(
+  pending: Promise<Uint8Array | undefined>,
+  signal: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const settle = (): void => {
+      signal.removeEventListener("abort", onAbort);
+    };
+    pending.then(
+      (value) => {
+        settle();
+        resolve(value);
+      },
+      (error: unknown) => {
+        settle();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Wraps a store so callers asking for the same bytes while a read is in flight share it.
+ *
+ * Two reads match when their key and byte range are equal. The shared read carries no
+ * caller's `AbortSignal`: one caller aborting must not fail the others waiting on it, so
+ * an abort rejects that caller and leaves the bytes to finish. A read that settles is
+ * forgotten, so a later caller reads again and a failure is never retained.
+ *
+ * Layer this beneath {@link createCachingStore}: the cache answers what it already holds,
+ * and this collapses the concurrent misses that reach past it.
+ */
+export function createDedupingStore(store: Store): Store {
+  const inflight = new Map<string, Promise<Uint8Array | undefined>>();
+
+  const share = (
+    key: string,
+    read: () => Promise<Uint8Array | undefined>,
+    signal: AbortSignal | undefined,
+  ): Promise<Uint8Array | undefined> => {
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason);
+    }
+    let pending = inflight.get(key);
+    if (pending === undefined) {
+      pending = read();
+      inflight.set(key, pending);
+      const forget = (): void => {
+        inflight.delete(key);
+      };
+      // Handling both outcomes here keeps a rejection no caller awaited from surfacing
+      // as an unhandled rejection.
+      pending.then(forget, forget);
+    }
+    return signal === undefined ? pending : raceAbort(pending, signal);
+  };
+
+  return {
+    get: (key, opts) => share(readKey(key), () => store.get(key), opts?.signal),
+    getRange: (key, range, opts) =>
+      share(
+        readKey(key, range),
+        () => store.getRange(key, range),
+        opts?.signal,
+      ),
   };
 }
 

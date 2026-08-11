@@ -73,6 +73,12 @@ Array metadata does not go through the cache at all. The client reads the root
 `zarr.json` once and serves every array's metadata out of its consolidated block, so a
 query fetches chunk bytes and nothing else.
 
+Callers that ask for the same bytes while a read is already in flight share that read
+rather than issuing their own. Concurrent queries over overlapping windows therefore
+fetch each chunk once. A shared read carries no caller's `AbortSignal`, since one caller
+aborting must not fail the others: aborting rejects that caller promptly and leaves the
+bytes to finish and land in the cache.
+
 ### Round trips per query
 
 A query reads one level per trace, and each read costs at least one round trip. Reads run

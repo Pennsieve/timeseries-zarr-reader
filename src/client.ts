@@ -20,6 +20,7 @@ import {
   createCachingStore,
   createCoalescingStore,
   createConsolidatedStore,
+  createDedupingStore,
 } from "./stores/cache.js";
 import type {
   ChannelInfo,
@@ -366,11 +367,13 @@ export class StreamingClient {
 
   /** Reads the catalog and layers the store the bundle's arrays are read through. */
   async #openBundle(): Promise<Bundle> {
-    const coalesced = createCoalescingStore(this.#store);
+    // Identical concurrent reads collapse before adjacent distinct ones merge, so the
+    // coalescer only ever sees one request per distinct range.
+    const deduped = createDedupingStore(createCoalescingStore(this.#store));
     const cached =
       this.#maxCacheBytes > 0
-        ? createCachingStore(coalesced, this.#maxCacheBytes)
-        : coalesced;
+        ? createCachingStore(deduped, this.#maxCacheBytes)
+        : deduped;
     // The catalog needs the root group's consolidated_metadata block, which the
     // consolidated store replaces with a plain group. Both read `/zarr.json`, and the
     // cache makes the second read free.
