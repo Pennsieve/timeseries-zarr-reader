@@ -6,10 +6,11 @@ windows are half-open, `[startUs, endUs)`.
 
 ## `new StreamingClient(options)`
 
-Takes `{ store, maxRawBytes?, maxCacheBytes? }`. `store` is any object implementing the
-`Store` type. `maxRawBytes` caps raw-level reads, 15 MB by default, and each query can
-override it. `maxCacheBytes` caps the client's cache of store responses, 64 MiB by
-default; zero reads through to the store every time.
+Takes `{ store, maxRawBytes?, maxCacheBytes?, maxInflightFetches? }`. `store` is any
+object implementing the `Store` type. `maxRawBytes` caps raw-level reads, 15 MB by
+default, and each query can override it. `maxCacheBytes` caps the client's cache of store
+responses, 64 MiB by default; zero reads through to the store every time.
+`maxInflightFetches` caps level reads in flight at once, 64 by default.
 
 ## `channelInfo()`
 
@@ -71,6 +72,17 @@ before it, so raise it rather than leave it thrashing.
 Array metadata does not go through the cache at all. The client reads the root
 `zarr.json` once and serves every array's metadata out of its consolidated block, so a
 query fetches chunk bytes and nothing else.
+
+### Round trips per query
+
+A query reads one level per trace, and each read costs at least one round trip. Reads run
+under `maxInflightFetches`, so a query serializes into `ceil(traces / maxInflightFetches)`
+rounds. Against a store with 200 ms of latency, 64 traces at a cap of 8 spend 1.6 seconds
+in round trips alone, whatever the bytes involved. Keep the cap at or above the number of
+traces a view puts on screen.
+
+Ranged reads of one key issued together are merged into one read, so a trace spanning
+several inner chunks of a shard costs one request rather than one per chunk.
 
 ### Delivery boundaries
 

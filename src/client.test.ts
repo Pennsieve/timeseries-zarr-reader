@@ -965,6 +965,71 @@ describe("dataSpans", () => {
   });
 });
 
+describe("in-flight cap", () => {
+  /** Wraps a store and records the most reads it ever had open at once. */
+  function trackConcurrency(inner: Store): {
+    store: Store;
+    peak: () => number;
+  } {
+    let open = 0;
+    let peak = 0;
+    const enter = async <T>(work: Promise<T>): Promise<T> => {
+      open += 1;
+      peak = Math.max(peak, open);
+      try {
+        return await work;
+      } finally {
+        open -= 1;
+      }
+    };
+    return {
+      store: {
+        get: (key, opts) => enter(inner.get(key, opts)),
+        getRange: (key, range, opts) => enter(inner.getRange(key, range, opts)),
+      },
+      peak: () => peak,
+    };
+  }
+
+  test("holds reads to the requested cap", async () => {
+    const tracked = trackConcurrency(createMemoryStore(bundleFiles(CHANNELS)));
+    const client = new StreamingClient({
+      store: tracked.store,
+      maxInflightFetches: 2,
+      maxCacheBytes: 0,
+    });
+
+    await collect(
+      client.query({
+        channels: ["a", "b", "c", "r", "g"],
+        ...FULL,
+        pixelWidthUs: 1000,
+      }),
+    );
+
+    expect(tracked.peak()).toBeLessThanOrEqual(2);
+  });
+
+  test("reads more traces at once when the cap allows", async () => {
+    const tracked = trackConcurrency(createMemoryStore(bundleFiles(CHANNELS)));
+    const client = new StreamingClient({
+      store: tracked.store,
+      maxInflightFetches: 5,
+      maxCacheBytes: 0,
+    });
+
+    await collect(
+      client.query({
+        channels: ["a", "b", "c", "r", "g"],
+        ...FULL,
+        pixelWidthUs: 1000,
+      }),
+    );
+
+    expect(tracked.peak()).toBeGreaterThan(2);
+  });
+});
+
 describe("response cache", () => {
   test("reads no array metadata key beyond the bundle root", async () => {
     const counting = createCountingStore(

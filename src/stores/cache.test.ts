@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   createByteCache,
   createCachingStore,
+  createCoalescingStore,
   createConsolidatedStore,
 } from "./cache.js";
 import {
@@ -125,6 +126,69 @@ describe("createCachingStore", () => {
     await cached.get("/a");
 
     expect(reads.get("/a")).toBe(2);
+  });
+});
+
+describe("createCoalescingStore", () => {
+  /** 0..255 as bytes, so a slice reports the offset it came from. */
+  const ramp = Uint8Array.from({ length: 256 }, (_, i) => i);
+
+  test("merges adjacent ranges of one key into one read", async () => {
+    const { store, reads } = createCountingStore(
+      createMemoryStore({ "/0/0/c/0": ramp }),
+    );
+    const coalesced = createCoalescingStore(store);
+
+    const [first, second] = await Promise.all([
+      coalesced.getRange("/0/0/c/0", { offset: 0, length: 8 }),
+      coalesced.getRange("/0/0/c/0", { offset: 8, length: 8 }),
+    ]);
+
+    expect(reads.get("/0/0/c/0")).toBe(1);
+    expect(Array.from(first ?? [])).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(Array.from(second ?? [])).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+  });
+
+  test("keeps distant ranges as separate reads", async () => {
+    const big = new Uint8Array(200_000);
+    const { store, reads } = createCountingStore(
+      createMemoryStore({ "/0/0/c/0": big }),
+    );
+    const coalesced = createCoalescingStore(store);
+
+    await Promise.all([
+      coalesced.getRange("/0/0/c/0", { offset: 0, length: 8 }),
+      coalesced.getRange("/0/0/c/0", { offset: 150_000, length: 8 }),
+    ]);
+
+    expect(reads.get("/0/0/c/0")).toBe(2);
+  });
+
+  test("does not merge across keys", async () => {
+    const { store, reads } = createCountingStore(
+      createMemoryStore({ "/a": ramp, "/b": ramp }),
+    );
+    const coalesced = createCoalescingStore(store);
+
+    await Promise.all([
+      coalesced.getRange("/a", { offset: 0, length: 8 }),
+      coalesced.getRange("/b", { offset: 0, length: 8 }),
+    ]);
+
+    expect(reads.get("/a")).toBe(1);
+    expect(reads.get("/b")).toBe(1);
+  });
+
+  test("passes a suffix read through unmerged", async () => {
+    const { store, reads } = createCountingStore(
+      createMemoryStore({ "/0/0/c/0": ramp }),
+    );
+    const coalesced = createCoalescingStore(store);
+
+    const tail = await coalesced.getRange("/0/0/c/0", { suffixLength: 4 });
+
+    expect(reads.get("/0/0/c/0")).toBe(1);
+    expect(Array.from(tail ?? [])).toEqual([252, 253, 254, 255]);
   });
 });
 

@@ -16,7 +16,11 @@ import type { FilterSession } from "./filter.js";
 import { createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
 import { resampleToPixels } from "./resample.js";
-import { createCachingStore, createConsolidatedStore } from "./stores/cache.js";
+import {
+  createCachingStore,
+  createCoalescingStore,
+  createConsolidatedStore,
+} from "./stores/cache.js";
 import type {
   ChannelInfo,
   EventBatch,
@@ -66,6 +70,11 @@ export interface StreamingClientOptions {
    * disables the cache, and the bundle root is then read twice on open.
    */
   readonly maxCacheBytes?: number;
+  /**
+   * Cap on level reads in flight at once. Defaults to `MAX_INFLIGHT_FETCHES`. Raise it
+   * for a high-latency store, lower it for one that throttles.
+   */
+  readonly maxInflightFetches?: number;
 }
 
 /** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
@@ -179,7 +188,7 @@ export class StreamingClient {
     this.#store = options.store;
     this.#maxRawBytes = options.maxRawBytes ?? MAX_RAW_BYTES;
     this.#maxCacheBytes = options.maxCacheBytes ?? MAX_CACHE_BYTES;
-    this.#limit = createFetchLimit();
+    this.#limit = createFetchLimit(options.maxInflightFetches);
     this.#filters = createFilterSession();
   }
 
@@ -357,10 +366,11 @@ export class StreamingClient {
 
   /** Reads the catalog and layers the store the bundle's arrays are read through. */
   async #openBundle(): Promise<Bundle> {
+    const coalesced = createCoalescingStore(this.#store);
     const cached =
       this.#maxCacheBytes > 0
-        ? createCachingStore(this.#store, this.#maxCacheBytes)
-        : this.#store;
+        ? createCachingStore(coalesced, this.#maxCacheBytes)
+        : coalesced;
     // The catalog needs the root group's consolidated_metadata block, which the
     // consolidated store replaces with a plain group. Both read `/zarr.json`, and the
     // cache makes the second read free.

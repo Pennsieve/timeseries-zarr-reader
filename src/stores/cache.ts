@@ -1,4 +1,8 @@
-import { withByteCaching, withConsolidatedMetadata } from "zarrita";
+import {
+  withByteCaching,
+  withConsolidatedMetadata,
+  withRangeCoalescing,
+} from "zarrita";
 import type { Store } from "../types.js";
 
 /**
@@ -68,6 +72,20 @@ export function createByteCache(maxBytes: number): ByteCache {
       }
     },
   };
+}
+
+/**
+ * Wraps a store so ranged reads of one key issued in the same microtask become one read.
+ *
+ * A read spanning several inner chunks of a shard asks for each separately. Merging them
+ * trades a few unused bytes between chunks for one round trip instead of several. Suffix
+ * reads are passed through unmerged.
+ *
+ * Layer this beneath {@link createCachingStore}, so the cache is keyed by the range each
+ * caller asked for rather than by whatever a merge produced.
+ */
+export function createCoalescingStore(store: Store): Store {
+  return withRangeCoalescing(store);
 }
 
 /**

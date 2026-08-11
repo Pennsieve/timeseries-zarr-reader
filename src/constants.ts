@@ -4,8 +4,14 @@
  */
 export const MAX_RAW_BYTES = 15_000_000;
 
-/** Maximum chunk fetches the reader keeps in flight at once. */
-export const MAX_INFLIGHT_FETCHES = 8;
+/**
+ * Default cap on level reads the reader keeps in flight at once.
+ *
+ * One query reads every trace on screen and each read costs at least one round trip, so
+ * a query serializes into `ceil(traces / cap)` rounds. A view with more traces than the
+ * cap pays a round trip per extra round, whatever the bytes involved.
+ */
+export const MAX_INFLIGHT_FETCHES = 64;
 
 /**
  * Default byte cap on the response cache a client holds over its store. Chunks span
