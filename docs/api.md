@@ -49,7 +49,9 @@ already decimated, so they cannot be filtered or differenced exactly.
 
 A segment is resampled onto the pixel grid only when one pixel spans more than 3 source
 bins. Below that ratio the segment comes back as fetched, at the level's own resolution, so
-read `samplePeriodUs` off the segment rather than assuming it equals `pixelWidthUs`.
+read `samplePeriodUs` off the segment rather than assuming it equals `pixelWidthUs`. The
+pixel grid is anchored at the channel start, so every window over a channel resamples onto
+the same buckets and adjacent windows tile one bucket apart.
 
 ### The raw-read byte cap
 

@@ -3,9 +3,14 @@ import type { Segment } from "./types.js";
 /**
  * Resamples a segment to one [min, max] pair per output pixel.
  *
- * Buckets are `pixelWidthUs` wide, anchored at the segment's `startUs`. Raw input is
- * reduced to the min and max of each bucket, and envelope input merges pairs (smallest
- * min, largest max). A trailing partial bucket is kept. Empty input yields empty data.
+ * Buckets are `pixelWidthUs` wide and lie on the grid of multiples of `pixelWidthUs`
+ * from `anchorUs`. Segments resampled with the same anchor and pixel width land on one
+ * shared grid whatever window they cover. The result's `startUs` is the start of the
+ * bucket holding the segment's first bin, at or before the segment's own start.
+ *
+ * Raw input is reduced to the min and max of each bucket, and envelope input merges
+ * pairs (smallest min, largest max). Partial buckets at either edge are kept. Empty
+ * input yields empty data.
  *
  * Non-finite values are skipped. A bucket with no finite values yields [NaN, NaN].
  *
@@ -13,10 +18,12 @@ import type { Segment } from "./types.js";
  * `pixelWidthUs`. Throws RangeError when `pixelWidthUs < samplePeriodUs`.
  *
  * @param pixelWidthUs - Time span of one output pixel column, in microseconds.
+ * @param anchorUs - Origin of the bucket grid, in microseconds.
  */
 export function resampleToPixels(
   segment: Segment,
   pixelWidthUs: number,
+  anchorUs: number,
 ): Segment {
   const { data, samplePeriodUs, isMinMax } = segment;
   if (pixelWidthUs < samplePeriodUs) {
@@ -27,7 +34,16 @@ export function resampleToPixels(
 
   const valuesPerBin = isMinMax ? 2 : 1;
   const binCount = data.length / valuesPerBin;
-  const pixelCount = Math.ceil((binCount * samplePeriodUs) / pixelWidthUs);
+  const startUs =
+    anchorUs +
+    Math.floor((segment.startUs - anchorUs) / pixelWidthUs) * pixelWidthUs;
+  const offsetUs = segment.startUs - startUs;
+  const pixelCount =
+    binCount === 0
+      ? 0
+      : Math.floor(
+          (offsetUs + (binCount - 1) * samplePeriodUs) / pixelWidthUs,
+        ) + 1;
   const out = new Float64Array(pixelCount * 2);
 
   // pixelWidthUs >= samplePeriodUs, so bins never skip a pixel and one forward scan
@@ -38,7 +54,7 @@ export function resampleToPixels(
     let max = -Infinity;
     while (
       bin < binCount &&
-      Math.floor((bin * samplePeriodUs) / pixelWidthUs) === pixel
+      Math.floor((offsetUs + bin * samplePeriodUs) / pixelWidthUs) === pixel
     ) {
       const end = (bin + 1) * valuesPerBin;
       for (let i = bin * valuesPerBin; i < end; i++) {
@@ -57,6 +73,7 @@ export function resampleToPixels(
 
   return {
     ...segment,
+    startUs,
     samplePeriodUs: pixelWidthUs,
     isMinMax: true,
     data: out,
