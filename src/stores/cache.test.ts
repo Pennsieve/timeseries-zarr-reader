@@ -235,6 +235,111 @@ describe("createDedupingStore", () => {
     expect(await kept).toHaveLength(8);
   });
 
+  /** Records the signal each read was given, so abort propagation is observable. */
+  function watchedStore(): {
+    store: Store;
+    reads: () => number;
+    cancelled: () => number;
+    release: (value?: Uint8Array) => void;
+  } {
+    const pending: Array<(value: Uint8Array | undefined) => void> = [];
+    const signals: AbortSignal[] = [];
+    const record = (opts?: {
+      signal?: AbortSignal;
+    }): Promise<Uint8Array | undefined> => {
+      if (opts?.signal !== undefined) {
+        signals.push(opts.signal);
+      }
+      return new Promise((resolve) => pending.push(resolve));
+    };
+    return {
+      store: {
+        get: (_key, opts) => record(opts),
+        getRange: (_key, _range, opts) => record(opts),
+      },
+      reads: () => signals.length,
+      cancelled: () => signals.filter((signal) => signal.aborted).length,
+      release: (value: Uint8Array = bytes(4)) => {
+        for (const resolve of pending.splice(0)) resolve(value);
+      },
+    };
+  }
+
+  test("cancels the underlying read once every caller has aborted", async () => {
+    const watched = watchedStore();
+    const deduped = createDedupingStore(watched.store);
+    const first = new AbortController();
+    const second = new AbortController();
+
+    const a = deduped.get("/zarr.json", { signal: first.signal });
+    const b = deduped.get("/zarr.json", { signal: second.signal });
+    expect(watched.reads()).toBe(1);
+    expect(watched.cancelled()).toBe(0);
+
+    first.abort();
+    await expect(a).rejects.toThrow();
+    expect(watched.cancelled()).toBe(0);
+
+    second.abort();
+    await expect(b).rejects.toThrow();
+    expect(watched.cancelled()).toBe(1);
+  });
+
+  test("leaves the underlying read running while a caller is still waiting", async () => {
+    const watched = watchedStore();
+    const deduped = createDedupingStore(watched.store);
+    const quitter = new AbortController();
+    const stayer = new AbortController();
+
+    const abandoned = deduped.get("/zarr.json", { signal: quitter.signal });
+    const kept = deduped.get("/zarr.json", { signal: stayer.signal });
+
+    quitter.abort();
+    await expect(abandoned).rejects.toThrow();
+    expect(watched.cancelled()).toBe(0);
+
+    watched.release(bytes(8));
+    expect(await kept).toHaveLength(8);
+  });
+
+  test("a caller without a signal holds the underlying read to completion", async () => {
+    const watched = watchedStore();
+    const deduped = createDedupingStore(watched.store);
+    const quitter = new AbortController();
+
+    const kept = deduped.get("/zarr.json");
+    const abandoned = deduped.get("/zarr.json", { signal: quitter.signal });
+
+    quitter.abort();
+    await expect(abandoned).rejects.toThrow();
+    expect(watched.cancelled()).toBe(0);
+
+    watched.release(bytes(8));
+    expect(await kept).toHaveLength(8);
+  });
+
+  test("reads again unsigned when a merged neighbour aborts the shared read", async () => {
+    let reads = 0;
+    const seen: Array<AbortSignal | undefined> = [];
+    const store: Store = {
+      get: async (_key, opts) => {
+        reads += 1;
+        seen.push(opts?.signal);
+        if (reads === 1) {
+          // A neighbouring range merged with this one downstream was cancelled.
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        }
+        return bytes(8);
+      },
+      getRange: async () => undefined,
+    };
+    const deduped = createDedupingStore(store);
+
+    expect(await deduped.get("/zarr.json")).toHaveLength(8);
+    expect(reads).toBe(2);
+    expect(seen.filter((signal) => signal === undefined)).toHaveLength(1);
+  });
+
   test("an already-aborted caller rejects without reading", async () => {
     const gate = gatedStore();
     const deduped = createDedupingStore(gate.store);

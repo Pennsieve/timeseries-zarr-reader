@@ -7,15 +7,23 @@ windows are half-open, `[startUs, endUs)`.
 ## `new StreamingClient(options)`
 
 Takes `{ store, maxRawBytes?, maxCacheBytes?, maxInflightFetches? }`. `store` is any
-object implementing the `Store` type. `maxRawBytes` caps raw-level reads, 15 MB by
-default, and each query can override it. `maxCacheBytes` caps the client's cache of store
-responses, 64 MiB by default; zero reads through to the store every time.
-`maxInflightFetches` caps level reads in flight at once, 64 by default.
+object implementing the `Store` type. `maxRawBytes` caps forced-raw reads (a filter, a
+montage, or `raw: true`), 15 MB by default, and each query can override it; a read that
+selects the raw level through zoom alone is not capped. `maxCacheBytes` caps the
+client's cache of store responses, 64 MiB by default. Zero removes the cache layer;
+identical in-flight reads still collapse, same-microtask ranges still merge, and the
+bundle root is read twice on open. `maxInflightFetches` caps level reads in flight at
+once, 64 by default.
+
+The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
+`UnitQueryOptions`, and `DataSpanOptions`.
 
 ## `channelInfo()`
 
 Returns a `ChannelInfo` array covering every channel in the bundle, with `id`, `name`,
-`unit`, `rateHz`, `startUs`, `endUs`, and `kind` (`"continuous"` or `"unit"`).
+`unit`, `rateHz`, `startUs`, `endUs`, and `kind` (`"continuous"` or `"unit"`). `endUs`
+is exclusive, one period past the last sample. A unit channel reports `endUs` equal to
+`startUs`.
 
 ## `query(options)`
 
@@ -26,12 +34,17 @@ to name the traces:
 
 - `channels`: channel ids, one trace each.
 - `montage`: `{ lead, secondary }` pairs. Each trace is `lead - secondary`, sample by
-  sample.
+  sample. The returned segment's `channel` is the compound key
+  `{leadId}_{leadName}<->{secondaryName}`. The pair must share a sample rate, and the
+  two sample grids must align: equal periods, with starts a whole number of periods
+  apart. The read covers the pair's shared extent.
 
 Passing both or neither throws. The rest of the options:
 
 - `filter`: a Butterworth `FilterSpec` (`lowpass`, `highpass`, `bandpass`, or
-  `bandstop`) applied to every trace.
+  `bandstop`) applied to every trace. `order` is an integer from 1 to 12. Frequencies
+  must lie strictly between 0 and the channel's Nyquist frequency, and the band forms
+  require `lowHz < highHz`. A spec outside those bounds rejects with `RangeError`.
 - `raw`: `true` returns raw samples with no decimation or resampling. Defaults to `false`.
 - `maxRawBytes`: byte-cap override for this query.
 - `signal`: an `AbortSignal` that cancels in-flight reads.
@@ -40,9 +53,10 @@ Passing both or neither throws. The rest of the options:
 
 ### Level selection
 
-The reader picks the coarsest pyramid level whose bins fit within one pixel. Segments from
-a coarse level carry interleaved `[min, max, ...]` envelope pairs and set `isMinMax`;
-segments from the raw level carry samples.
+The reader picks the coarsest pyramid level whose bins fit within one pixel, falling
+back to the finest level when none fits. Segments from a coarse level carry interleaved
+`[min, max, ...]` envelope pairs and set `isMinMax`; segments from the raw level carry
+samples.
 
 A montage, a filter, or `raw: true` forces a read of the raw level. Coarse levels are
 already decimated, so they cannot be filtered or differenced exactly.
@@ -50,8 +64,9 @@ already decimated, so they cannot be filtered or differenced exactly.
 A segment is resampled onto the pixel grid only when one pixel spans more than 3 source
 bins. Below that ratio the segment comes back as fetched, at the level's own resolution, so
 read `samplePeriodUs` off the segment rather than assuming it equals `pixelWidthUs`. The
-pixel grid is anchored at the channel start, so every window over a channel resamples onto
-the same buckets and adjacent windows tile one bucket apart.
+pixel grid is anchored at the channel start (the lead channel's start for a montage), so
+every window over a channel resamples onto the same buckets and adjacent windows tile one
+bucket apart.
 
 ### The raw-read byte cap
 
@@ -87,7 +102,7 @@ A query reads one level per trace, and each read costs at least one round trip. 
 under `maxInflightFetches`, so a query serializes into `ceil(traces / maxInflightFetches)`
 rounds. Against a store with 200 ms of latency, 64 traces at a cap of 8 spend 1.6 seconds
 in round trips alone, whatever the bytes involved. Keep the cap at or above the number of
-traces a view puts on screen.
+traces a view puts on screen. Unit-channel reads do not run under the cap.
 
 Ranged reads of one key issued together are merged into one read, so a trace spanning
 several inner chunks of a shard costs one request rather than one per chunk.
@@ -96,17 +111,25 @@ several inner chunks of a shard costs one request rather than one per chunk.
 
 Segments are delivered on bin boundaries. A segment's `startUs` is the start of the first
 bin overlapping the window, and its data can run up to one bin past `endUs`. A window
-overlapping no data yields a segment with empty `data`.
+overlapping no data yields a segment with empty `data` and a `startUs` clamped to the
+nearest channel edge.
+
+A gap inside the window arrives as NaN values inside the one segment; `query()` never
+splits a trace into several segments. A resampled pixel bucket with no finite value
+comes back as a `[NaN, NaN]` pair, so gaps stay visible at every zoom.
 
 `query()` is an async generator. Validation happens on the first iteration, not on the
-call, so wrap the `for await` loop in `try`/`catch` rather than the call itself.
+call, so wrap the `for await` loop in `try`/`catch` rather than the call itself. A
+non-positive `pixelWidthUs`, a window with `endUs < startUs`, and an already-aborted
+`signal` all reject there.
 
 ### Filter state
 
 A filter is stateful. The client holds that state for its lifetime, one filter per
-(channel, filter spec, sample rate). Consecutive windows filter as one continuous signal,
-so a trace read window by window matches the same trace read whole. A jump backwards, or a
-gap wider than 100 samples, restarts the filter for that channel.
+(channel, filter spec, sample rate). A montaged trace keys its state by the compound
+montage key, separate from either constituent channel. Consecutive windows filter as one
+continuous signal, so a trace read window by window matches the same trace read whole. A
+jump backwards, or a gap wider than 100 samples, restarts the filter for that channel.
 
 A continuation is the one case where a segment does not start on a bin boundary. Reads
 snap outward to bin boundaries, so two windows meeting between samples both cover the
@@ -121,8 +144,9 @@ Returns an async iterable of `EventBatch`, one per requested unit channel. Takes
 `channels`, `startUs`, `endUs`, `pixelWidthUs`, and an optional `signal`.
 
 Each batch holds ascending timestamps within the window. Waveform samples
-(`pointsPerEvent` values per event, row-major) are included only when one waveform spans
-more than 10 pixels. Otherwise `pointsPerEvent` is 0 and `data` is empty.
+(`pointsPerEvent` values per event, row-major) are included only when the window holds
+events and one waveform spans more than 10 pixels. Otherwise `pointsPerEvent` is 0 and
+`data` is empty.
 
 ## `dataSpans(options)`
 
