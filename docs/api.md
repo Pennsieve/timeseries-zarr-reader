@@ -13,8 +13,8 @@ montage, or `raw: true`), 15 MB by default, and each query can override it; a re
 selects the raw level through zoom alone is not capped. `maxCacheBytes` caps the
 client's cache of store responses, 64 MiB by default. Zero removes the cache layer;
 identical in-flight reads still collapse, same-microtask ranges still merge, and the
-bundle root is read twice on open. `maxInflightFetches` caps level reads in flight at
-once, 64 by default. `maxConcurrentRequests` caps the requests those reads turn into
+bundle root is read twice on open. `maxInflightFetches` caps level reads in
+flight, 64 by default. `maxConcurrentRequests` caps the requests those reads turn into
 once identical reads have collapsed and adjacent ranges have merged, also 64 by
 default. Lower it for a store that throttles.
 
@@ -94,8 +94,8 @@ Array metadata does not go through the cache at all. The client reads the root
 query fetches chunk bytes and nothing else.
 
 Callers that ask for the same bytes while a read is already in flight share that read
-rather than issuing their own. Concurrent queries over overlapping windows therefore
-fetch each chunk once. One caller aborting rejects that caller promptly and leaves the
+rather than issuing their own, so concurrent queries over overlapping windows fetch
+each chunk once. One caller aborting rejects that caller promptly and leaves the
 read running for the rest. The request itself is cancelled once every caller waiting on
 it has aborted, so a discarded viewport stops consuming the connection. A caller that
 passes no signal cannot abort, and holds the read to completion for everyone.
@@ -142,7 +142,8 @@ A filter is stateful. The client holds that state for its lifetime, one filter p
 (channel, filter spec, sample rate). A montaged trace keys its state by the compound
 montage key, separate from either constituent channel. Consecutive windows filter as one
 continuous signal, so a trace read window by window matches the same trace read whole. A
-jump backwards, or a gap wider than 100 samples, restarts the filter for that channel.
+backward jump of more than one sample, or a gap wider than 100 samples, restarts the
+filter for that channel.
 
 A continuation is the one case where a segment does not start on a bin boundary. Reads
 snap outward to bin boundaries, so two windows meeting between samples both cover the
@@ -154,7 +155,8 @@ on sample boundaries.
 ## `queryUnits(options)`
 
 Returns an async iterable of `EventBatch`, one per requested unit channel. Takes
-`channels`, `startUs`, `endUs`, `pixelWidthUs`, and an optional `signal`.
+`channels`, `startUs`, `endUs`, `pixelWidthUs`, an optional `priority` (defaulting to
+`"viewport"`), and an optional `signal`.
 
 Each batch holds ascending timestamps within the window. Waveform samples
 (`pointsPerEvent` values per event, row-major) are included only when the window holds
@@ -165,7 +167,7 @@ events and one waveform spans more than 10 pixels. Otherwise `pointsPerEvent` is
 
 Returns a promise for the `[startUs, endUs)` spans where one continuous channel has data,
 clamped to the window. Takes `channel`, `startUs`, `endUs`, an optional `gapThresholdUs`,
-and an optional `signal`.
+an optional `priority` (defaulting to `"background"`), and an optional `signal`.
 
 Spans come from the coarsest pyramid level, so their edges align to that level's bins.
 Gaps no wider than `gapThresholdUs` are bridged into one span. The default of 0 splits on

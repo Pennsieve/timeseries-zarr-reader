@@ -1,8 +1,8 @@
 # timeseries-zarr-reader
 
-A TypeScript library that reads pyramid Zarr v3 bundles of electrophysiology
-time series in the browser or Node, and produces per-channel segments sized for
-canvas rendering. Provided with no JavaScript framework dependencies.
+A framework-agnostic TypeScript library that reads pyramid Zarr v3 bundles of
+electrophysiology time series in the browser or Node, and produces per-channel
+segments sized for canvas rendering.
 
 The library takes a Zarr `Store` and yields `Segment` and `EventBatch` async iterables.
 Level selection, min/max resampling to the pixel grid, bipolar montages, Butterworth
@@ -55,8 +55,8 @@ for await (const segment of client.query({
   montage, a filter, or `raw: true` forces a raw read instead.
 - Forced-raw reads are capped at 15 MB and reject with `RawReadTooLargeError` before
   fetching. A read that lands on the raw level through zoom alone is not capped.
-- Segments are delivered on bin boundaries, so one can start before `startUs` and run
-  past `endUs`.
+- Segments are delivered on bin boundaries, so a segment can start before `startUs`
+  and run past `endUs`.
 - Filters carry state across consecutive windows, so a trace read window by window
   matches the same trace read whole.
 - `query()` reads continuous channels. Unit channels are read with `queryUnits()`.
