@@ -4,6 +4,7 @@ import {
   withRangeCoalescing,
 } from "zarrita";
 import type { ByteRange, Store } from "../types.js";
+import { createFetchLimit } from "../fetch.js";
 
 /**
  * A bounded store of response bytes, keyed by request.
@@ -195,6 +196,49 @@ export function createDedupingStore(store: Store): Store {
         (signal) => store.getRange(key, range, { signal }),
         opts?.signal,
       ),
+  };
+}
+
+/**
+ * Wraps a store so at most `maxConcurrent` reads are in flight, started in the order they
+ * were submitted.
+ *
+ * Layer this innermost, beneath {@link createCoalescingStore}. What reaches it is then
+ * one request per merged range, which is what the transport actually sends. Grouping is
+ * decided above it, so waiting for a slot delays a request without splitting a batch.
+ * Placing it above a layer that awaits a read would deadlock instead: the readers of one
+ * shard index all wait on the single read that fetches it, and that read needs a slot of
+ * its own.
+ *
+ * A caller whose signal aborts while queued rejects when its slot comes up, without
+ * reaching the store.
+ *
+ * Throws a TypeError when `maxConcurrent` is not a positive integer.
+ */
+export function createThrottlingStore(
+  store: Store,
+  maxConcurrent: number,
+): Store {
+  const limit = createFetchLimit(maxConcurrent);
+
+  const run = <T>(
+    task: () => Promise<T>,
+    signal: AbortSignal | undefined,
+  ): Promise<T> => {
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason);
+    }
+    return limit(() => {
+      // The wait for a slot can outlive the caller.
+      signal?.throwIfAborted();
+      return task();
+    });
+  };
+
+  return {
+    get: (key, opts) => run(() => store.get(key, opts), opts?.signal),
+    getRange: (key, range, opts) =>
+      run(() => store.getRange(key, range, opts), opts?.signal),
   };
 }
 

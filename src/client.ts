@@ -7,6 +7,7 @@ import type {
 import { binRange, readCatalog, selectLevel } from "./catalog.js";
 import {
   MAX_CACHE_BYTES,
+  MAX_CONCURRENT_REQUESTS,
   MAX_RAW_BYTES,
   RESAMPLE_PIXEL_RATIO,
 } from "./constants.js";
@@ -21,6 +22,7 @@ import {
   createCoalescingStore,
   createConsolidatedStore,
   createDedupingStore,
+  createThrottlingStore,
 } from "./stores/cache.js";
 import type {
   ChannelInfo,
@@ -73,9 +75,16 @@ export interface StreamingClientOptions {
   readonly maxCacheBytes?: number;
   /**
    * Cap on level reads in flight at once. Defaults to `MAX_INFLIGHT_FETCHES`. Raise it
-   * for a high-latency store, lower it for one that throttles.
+   * for a high-latency store.
    */
   readonly maxInflightFetches?: number;
+  /**
+   * Cap on transport requests in flight at once, counted after identical reads collapse
+   * and adjacent ranges merge. Defaults to `MAX_CONCURRENT_REQUESTS`. Lower it for a
+   * store that throttles; a value under the level-read cap adds a round trip per extra
+   * round.
+   */
+  readonly maxConcurrentRequests?: number;
 }
 
 /** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
@@ -178,7 +187,8 @@ interface Bundle {
  * gap wider than `FILTER_GAP_RESET_SAMPLES` sample periods restarts the filter for that
  * channel.
  *
- * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
+ * Reads of pyramid levels share an in-flight concurrency cap, which unit-channel reads do
+ * not. Every read, of either kind, passes through a second cap on transport requests.
  *
  * Store responses are cached for the client's lifetime, bounded by `maxCacheBytes`.
  */
@@ -186,6 +196,7 @@ export class StreamingClient {
   readonly #store: Store;
   readonly #maxRawBytes: number;
   readonly #maxCacheBytes: number;
+  readonly #maxConcurrentRequests: number;
   readonly #limit: FetchLimit;
   readonly #filters: FilterSession;
   #bundle: Promise<Bundle> | undefined;
@@ -194,6 +205,8 @@ export class StreamingClient {
     this.#store = options.store;
     this.#maxRawBytes = options.maxRawBytes ?? MAX_RAW_BYTES;
     this.#maxCacheBytes = options.maxCacheBytes ?? MAX_CACHE_BYTES;
+    this.#maxConcurrentRequests =
+      options.maxConcurrentRequests ?? MAX_CONCURRENT_REQUESTS;
     this.#limit = createFetchLimit(options.maxInflightFetches);
     this.#filters = createFilterSession();
   }
@@ -379,8 +392,13 @@ export class StreamingClient {
   /** Reads the catalog and layers the store the bundle's arrays are read through. */
   async #openBundle(): Promise<Bundle> {
     // Identical concurrent reads collapse before adjacent distinct ones merge, so the
-    // coalescer only ever sees one request per distinct range.
-    const deduped = createDedupingStore(createCoalescingStore(this.#store));
+    // coalescer only ever sees one request per distinct range. The throttle sits under
+    // both, where the requests it counts are the ones the transport sends.
+    const deduped = createDedupingStore(
+      createCoalescingStore(
+        createThrottlingStore(this.#store, this.#maxConcurrentRequests),
+      ),
+    );
     const cached =
       this.#maxCacheBytes > 0
         ? createCachingStore(deduped, this.#maxCacheBytes)

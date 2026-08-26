@@ -6,14 +6,17 @@ windows are half-open, `[startUs, endUs)`.
 
 ## `new StreamingClient(options)`
 
-Takes `{ store, maxRawBytes?, maxCacheBytes?, maxInflightFetches? }`. `store` is any
+Takes `{ store, maxRawBytes?, maxCacheBytes?, maxInflightFetches?,
+maxConcurrentRequests? }`. `store` is any
 object implementing the `Store` type. `maxRawBytes` caps forced-raw reads (a filter, a
 montage, or `raw: true`), 15 MB by default, and each query can override it; a read that
 selects the raw level through zoom alone is not capped. `maxCacheBytes` caps the
 client's cache of store responses, 64 MiB by default. Zero removes the cache layer;
 identical in-flight reads still collapse, same-microtask ranges still merge, and the
 bundle root is read twice on open. `maxInflightFetches` caps level reads in flight at
-once, 64 by default.
+once, 64 by default. `maxConcurrentRequests` caps the requests those reads turn into
+once identical reads have collapsed and adjacent ranges have merged, also 64 by
+default. Lower it for a store that throttles.
 
 The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
 `UnitQueryOptions`, and `DataSpanOptions`.
@@ -92,9 +95,10 @@ query fetches chunk bytes and nothing else.
 
 Callers that ask for the same bytes while a read is already in flight share that read
 rather than issuing their own. Concurrent queries over overlapping windows therefore
-fetch each chunk once. A shared read carries no caller's `AbortSignal`, since one caller
-aborting must not fail the others: aborting rejects that caller promptly and leaves the
-bytes to finish and land in the cache.
+fetch each chunk once. One caller aborting rejects that caller promptly and leaves the
+read running for the rest. The request itself is cancelled once every caller waiting on
+it has aborted, so a discarded viewport stops consuming the connection. A caller that
+passes no signal cannot abort, and holds the read to completion for everyone.
 
 ### Round trips per query
 
@@ -105,7 +109,9 @@ in round trips alone, whatever the bytes involved. Keep the cap at or above the 
 traces a view puts on screen. Unit-channel reads do not run under the cap.
 
 Ranged reads of one key issued together are merged into one read, so a trace spanning
-several inner chunks of a shard costs one request rather than one per chunk.
+several inner chunks of a shard costs one request rather than one per chunk. Merging is
+decided before the request cap applies, so waiting for a slot delays a request without
+splitting a batch.
 
 ### Delivery boundaries
 

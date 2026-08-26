@@ -5,6 +5,7 @@ import {
   createCoalescingStore,
   createConsolidatedStore,
   createDedupingStore,
+  createThrottlingStore,
 } from "./cache.js";
 import type { Store } from "../types.js";
 import {
@@ -340,7 +341,7 @@ describe("createDedupingStore", () => {
     expect(seen.filter((signal) => signal === undefined)).toHaveLength(1);
   });
 
-  test("an already-aborted caller rejects without reading", async () => {
+  test("an already-aborted caller rejects without reading (dedup)", async () => {
     const gate = gatedStore();
     const deduped = createDedupingStore(gate.store);
     const controller = new AbortController();
@@ -371,9 +372,180 @@ describe("createDedupingStore", () => {
   });
 });
 
+describe("createThrottlingStore", () => {
+  /** Typed key list, since Store keys are template-literal typed. */
+  const keys = (...paths: Array<`/${string}`>): Array<`/${string}`> => paths;
+
+  /** Counts reads that overlap, and the order they reached the store. */
+  function tracked(): {
+    store: Store;
+    peak: () => number;
+    keys: string[];
+  } {
+    let open = 0;
+    let peak = 0;
+    const keys: string[] = [];
+    const enter = async (key: string): Promise<Uint8Array | undefined> => {
+      keys.push(key);
+      open += 1;
+      peak = Math.max(peak, open);
+      try {
+        // Two turns, so an unbounded caller would overlap here.
+        await Promise.resolve();
+        await Promise.resolve();
+        return new Uint8Array(4);
+      } finally {
+        open -= 1;
+      }
+    };
+    return {
+      store: { get: (key) => enter(key), getRange: (key) => enter(key) },
+      peak: () => peak,
+      keys,
+    };
+  }
+
+  test("holds concurrent reads to the requested cap", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 2);
+
+    await Promise.all(
+      keys("/a", "/b", "/c", "/d", "/e", "/f").map((key) => throttled.get(key)),
+    );
+
+    expect(inner.peak()).toBe(2);
+    expect(inner.keys).toHaveLength(6);
+  });
+
+  test("lets every read through when the cap is not reached", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 8);
+
+    await Promise.all(
+      keys("/a", "/b", "/c", "/d").map((key) => throttled.get(key)),
+    );
+
+    expect(inner.peak()).toBe(4);
+  });
+
+  test("counts whole-key and ranged reads against one cap", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 1);
+
+    await Promise.all([
+      throttled.get("/a"),
+      throttled.getRange("/b", { offset: 0, length: 8 }),
+    ]);
+
+    expect(inner.peak()).toBe(1);
+    expect(inner.keys).toEqual(["/a", "/b"]);
+  });
+
+  test("releases a slot when a read fails", async () => {
+    let started = 0;
+    const failing: Store = {
+      get: async () => {
+        started += 1;
+        throw new Error("transport down");
+      },
+      getRange: async () => undefined,
+    };
+    const throttled = createThrottlingStore(failing, 1);
+
+    await expect(throttled.get("/a")).rejects.toThrow("transport down");
+    await expect(throttled.get("/b")).rejects.toThrow("transport down");
+    expect(started).toBe(2);
+  });
+
+  test("rejects a queued read whose signal aborts, without reading", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 1);
+    const quitter = new AbortController();
+
+    const running = throttled.get("/a");
+    const queued = throttled.get("/b", { signal: quitter.signal });
+    quitter.abort();
+
+    await expect(queued).rejects.toThrow();
+    await running;
+
+    expect(inner.keys).toEqual(["/a"]);
+  });
+
+  test("frees the slot a queued read gave up", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 1);
+    const quitter = new AbortController();
+
+    const running = throttled.get("/a");
+    const abandoned = throttled.get("/b", { signal: quitter.signal });
+    const waiting = throttled.get("/c");
+    quitter.abort();
+
+    await expect(abandoned).rejects.toThrow();
+    await Promise.all([running, waiting]);
+
+    expect(inner.keys).toEqual(["/a", "/c"]);
+  });
+
+  test("rejects an already-aborted caller without taking a place", async () => {
+    const inner = tracked();
+    const throttled = createThrottlingStore(inner.store, 1);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      throttled.get("/a", { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(inner.keys).toEqual([]);
+  });
+
+  test("passes the caller's options through to the store", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const store: Store = {
+      get: async (_key, opts) => {
+        seen.push(opts?.signal);
+        return new Uint8Array(4);
+      },
+      getRange: async () => undefined,
+    };
+    const throttled = createThrottlingStore(store, 4);
+    const controller = new AbortController();
+
+    await throttled.get("/a", { signal: controller.signal });
+
+    expect(seen).toEqual([controller.signal]);
+  });
+
+  test("throws for a concurrency that is not a positive integer", () => {
+    const inner = tracked();
+
+    expect(() => createThrottlingStore(inner.store, 0)).toThrow(TypeError);
+    expect(() => createThrottlingStore(inner.store, 1.5)).toThrow(TypeError);
+  });
+});
+
 describe("createCoalescingStore", () => {
   /** 0..255 as bytes, so a slice reports the offset it came from. */
   const ramp = Uint8Array.from({ length: 256 }, (_, i) => i);
+
+  test("merges adjacent ranges even when the throttle defers them", async () => {
+    const { store, reads } = createCountingStore(
+      createMemoryStore({ "/0/0/c/0": ramp }),
+    );
+    // The layering #openBundle uses: grouping happens above the throttle, so a
+    // wait for a slot must not split a batch.
+    const coalesced = createCoalescingStore(createThrottlingStore(store, 1));
+
+    const [first, second] = await Promise.all([
+      coalesced.getRange("/0/0/c/0", { offset: 0, length: 8 }),
+      coalesced.getRange("/0/0/c/0", { offset: 8, length: 8 }),
+    ]);
+
+    expect(reads.get("/0/0/c/0")).toBe(1);
+    expect(Array.from(first ?? [])).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(Array.from(second ?? [])).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+  });
 
   test("merges adjacent ranges of one key into one read", async () => {
     const { store, reads } = createCountingStore(

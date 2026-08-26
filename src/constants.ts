@@ -14,6 +14,17 @@ export const MAX_RAW_BYTES = 15_000_000;
 export const MAX_INFLIGHT_FETCHES = 64;
 
 /**
+ * Default cap on transport requests in flight at once, counted after identical reads
+ * collapse and adjacent ranges merge.
+ *
+ * A sharded level read asks for the shard index and then the inner chunks, and the two
+ * phases do not overlap, so a query's peak request count is its level-read count. This
+ * matches `MAX_INFLIGHT_FETCHES` for that reason: it bounds a runaway fan-out without
+ * adding a round trip to a query the level cap already admitted.
+ */
+export const MAX_CONCURRENT_REQUESTS = 64;
+
+/**
  * Default byte cap on the response cache a client holds over its store. Chunks span
  * more time than one query window, so adjacent windows read the same chunk.
  */
