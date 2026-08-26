@@ -106,7 +106,14 @@ A query reads one level per trace, and each read costs at least one round trip. 
 under `maxInflightFetches`, so a query serializes into `ceil(traces / maxInflightFetches)`
 rounds. Against a store with 200 ms of latency, 64 traces at a cap of 8 spend 1.6 seconds
 in round trips alone, whatever the bytes involved. Keep the cap at or above the number of
-traces a view puts on screen. Unit-channel reads do not run under the cap.
+traces a view puts on screen.
+
+Reads are admitted highest priority first. A query takes `priority`, one of `viewport`,
+`prefetch` or `background`, defaulting to `viewport`; `dataSpans` defaults to
+`background`. A lower priority holds only part of the pool, so a survey submitted before
+the first viewport read cannot take every slot, and a priority with nothing running is
+admitted ahead of the order, so none waits forever. Order within one priority is the
+order of submission.
 
 Ranged reads of one key issued together are merged into one read, so a trace spanning
 several inner chunks of a shard costs one request rather than one per chunk. Merging is

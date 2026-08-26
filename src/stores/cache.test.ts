@@ -341,6 +341,26 @@ describe("createDedupingStore", () => {
     expect(seen.filter((signal) => signal === undefined)).toHaveLength(1);
   });
 
+  test("starts a new read when the shared one was already cancelled", async () => {
+    const watched = watchedStore();
+    const deduped = createDedupingStore(watched.store);
+    const quitter = new AbortController();
+
+    // A page is requested, then a dump aborts it, cancelling the shared read.
+    const abandoned = deduped.get("/zarr.json", { signal: quitter.signal });
+    quitter.abort();
+    await expect(abandoned).rejects.toThrow();
+    expect(watched.cancelled()).toBe(1);
+
+    // The viewer immediately re-requests the same page. It must not join the
+    // read that was just cancelled.
+    const retried = deduped.get("/zarr.json");
+    expect(watched.reads()).toBe(2);
+
+    watched.release(bytes(8));
+    expect(await retried).toHaveLength(8);
+  });
+
   test("an already-aborted caller rejects without reading (dedup)", async () => {
     const gate = gatedStore();
     const deduped = createDedupingStore(gate.store);

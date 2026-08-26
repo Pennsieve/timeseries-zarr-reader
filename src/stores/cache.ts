@@ -131,6 +131,12 @@ export function createDedupingStore(store: Store): Store {
     }
 
     let entry = inflight.get(key);
+    if (entry?.controller.signal.aborted === true) {
+      // Cancelled, and still listed until its rejection settles. A caller arriving
+      // now wants these bytes, so it needs a read of its own rather than this one's
+      // guaranteed abort.
+      entry = undefined;
+    }
     if (entry === undefined) {
       const controller = new AbortController();
       const bytes = read(controller.signal).catch((error: unknown) => {
