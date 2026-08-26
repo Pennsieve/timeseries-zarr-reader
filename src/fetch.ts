@@ -1,5 +1,6 @@
 import pLimit from "p-limit";
 import { MAX_INFLIGHT_FETCHES } from "./constants.js";
+import type { ReadPriority } from "./types.js";
 
 /**
  * Runs at most a fixed number of tasks at once, starting them in submission order.
@@ -24,15 +25,6 @@ export function createFetchLimit(
   // p-limit validates concurrency and isolates task rejections.
   return pLimit(concurrency);
 }
-
-/**
- * What a read is for, which decides how early it is admitted.
- *
- * `viewport` is what the user is looking at, `prefetch` is where they are likely to look
- * next, and `background` is work whose result is not on screen, such as a survey of the
- * whole recording.
- */
-export type ReadPriority = "viewport" | "prefetch" | "background";
 
 /**
  * Runs at most a fixed number of tasks at once, admitting the highest priority waiting.

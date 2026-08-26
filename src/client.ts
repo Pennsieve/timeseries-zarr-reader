@@ -11,7 +11,7 @@ import {
   MAX_RAW_BYTES,
   RESAMPLE_PIXEL_RATIO,
 } from "./constants.js";
-import type { PriorityLimit, ReadPriority } from "./fetch.js";
+import type { PriorityLimit } from "./fetch.js";
 import { createPriorityLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
 import { createFilterSession } from "./filter.js";
@@ -29,6 +29,7 @@ import type {
   EventBatch,
   FilterSpec,
   MontagePair,
+  ReadPriority,
   Segment,
   Store,
   StoreOptions,

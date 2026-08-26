@@ -110,10 +110,10 @@ traces a view puts on screen.
 
 Reads are admitted highest priority first. A query takes `priority`, one of `viewport`,
 `prefetch` or `background`, defaulting to `viewport`; `dataSpans` defaults to
-`background`. A lower priority holds only part of the pool, so a survey submitted before
-the first viewport read cannot take every slot, and a priority with nothing running is
-admitted ahead of the order, so none waits forever. Order within one priority is the
-order of submission.
+`background`. That union is exported as `ReadPriority`. A lower priority holds only part
+of the pool, so a survey submitted before the first viewport read cannot take every slot,
+and a priority with nothing running is admitted ahead of the order, so none waits
+forever. Order within one priority is the order of submission.
 
 Ranged reads of one key issued together are merged into one read, so a trace spanning
 several inner chunks of a shard costs one request rather than one per chunk. Merging is

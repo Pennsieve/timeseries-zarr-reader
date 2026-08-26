@@ -5,6 +5,7 @@ import type {
   EventBatch,
   FilterSpec,
   MontagePair,
+  ReadPriority,
   Segment,
   Store,
   StoreOptions,
@@ -76,6 +77,12 @@ test("EventBatch has the documented shape", () => {
   };
   expectTypeOf(ev.times).toEqualTypeOf<Float64Array>();
   expectTypeOf(ev.data).toEqualTypeOf<Float64Array>();
+});
+
+test("ReadPriority has the documented values", () => {
+  expectTypeOf<ReadPriority>().toEqualTypeOf<
+    "viewport" | "prefetch" | "background"
+  >();
 });
 
 test("Store reads whole keys and ranges, returning bytes or undefined", async () => {
