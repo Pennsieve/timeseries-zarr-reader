@@ -1,6 +1,6 @@
 """Generate test-data/sample.zarr, the committed acceptance-test bundle.
 
-Runs the writer from a ts-zarr-py checkout. The fixture has the full production
+Runs the writer from a timeseries-zarr-py checkout. The fixture has the full production
 layout: ZEP2 sharding, Zstd compression, crc32c shard indices, and consolidated
 metadata. The content is deterministic; the acceptance tests in src/client.test.ts and
 src/stores/parity.test.ts state exact expectations against it:
@@ -16,8 +16,8 @@ min_bins is lowered to 256 so a 30 k-sample channel produces four pyramid levels
 chunks within one shard. The "noise" channel depends on numpy's seeded RNG;
 everything else is exact arithmetic.
 
-Usage: <ts-zarr-py venv python> scripts/generate-test-bundle.py
-       (set TS_ZARR_PY to the writer checkout; defaults to ../ts-zarr-py)
+Usage: <timeseries-zarr-py venv python> scripts/generate-test-bundle.py
+       (set TIMESERIES_ZARR_PY to the writer checkout; defaults to ../timeseries-zarr-py)
 """
 
 import os
@@ -27,10 +27,12 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, os.environ.get("TS_ZARR_PY", str(Path(__file__).resolve().parents[2] / "ts-zarr-py")))
+sys.path.insert(
+    0, os.environ.get("TIMESERIES_ZARR_PY", str(Path(__file__).resolve().parents[2] / "timeseries-zarr-py"))
+)
 
-from ts_zarr.bundle import write_bundle
-from ts_zarr.types import WriteOpts
+from timeseries_zarr.bundle import write_bundle
+from timeseries_zarr.types import WriteOpts
 
 START_US = 1_704_067_200_000_000
 RATE_HZ = 1000.0

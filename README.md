@@ -10,7 +10,7 @@ filtering, and spike reads all run client-side. A server only has to serve bytes
 `Range` support.
 
 The bundle format is written and specified by
-[`ts-zarr-py`](https://github.com/Pennsieve/ts-zarr-py/blob/main/docs/bundle-format.md).
+[`timeseries-zarr-py`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/bundle-format.md).
 
 ## Installation
 
@@ -81,7 +81,7 @@ pnpm format:check  # prettier --check (read-only)
 Tests sit beside the module they cover, as `src/<module>.test.ts`. The acceptance tests
 read `test-data/sample.zarr`, a small bundle committed to the repository;
 `scripts/generate-test-bundle.py` documents its contents and rewrites it from a
-`ts-zarr-py` checkout.
+`timeseries-zarr-py` checkout.
 
 ## License
 
