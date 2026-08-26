@@ -22,6 +22,7 @@ test("the package re-exports the declared types", () => {
   expectTypeOf<reader.EventBatch>().toEqualTypeOf<types.EventBatch>();
   expectTypeOf<reader.FilterSpec>().toEqualTypeOf<types.FilterSpec>();
   expectTypeOf<reader.MontagePair>().toEqualTypeOf<types.MontagePair>();
+  expectTypeOf<reader.ReadPriority>().toEqualTypeOf<types.ReadPriority>();
   expectTypeOf<reader.Segment>().toEqualTypeOf<types.Segment>();
   expectTypeOf<reader.Store>().toEqualTypeOf<types.Store>();
   expectTypeOf<reader.StoreOptions>().toEqualTypeOf<types.StoreOptions>();

@@ -109,6 +109,15 @@ export interface EventBatch {
   readonly data: Float64Array;
 }
 
+/**
+ * What a read is for, which decides how early it is admitted.
+ *
+ * `viewport` is what the user is looking at, `prefetch` is where they are
+ * likely to look next, and `background` is work whose result is not on screen,
+ * such as a survey of the whole recording.
+ */
+export type ReadPriority = "viewport" | "prefetch" | "background";
+
 /** Bytes to read from a key: a window, or the last `suffixLength` bytes. */
 export type ByteRange =
   | { readonly offset: number; readonly length: number }

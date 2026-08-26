@@ -7,11 +7,12 @@ import type {
 import { binRange, readCatalog, selectLevel } from "./catalog.js";
 import {
   MAX_CACHE_BYTES,
+  MAX_CONCURRENT_REQUESTS,
   MAX_RAW_BYTES,
   RESAMPLE_PIXEL_RATIO,
 } from "./constants.js";
-import type { FetchLimit } from "./fetch.js";
-import { createFetchLimit } from "./fetch.js";
+import type { PriorityLimit } from "./fetch.js";
+import { createPriorityLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
 import { createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
@@ -21,12 +22,14 @@ import {
   createCoalescingStore,
   createConsolidatedStore,
   createDedupingStore,
+  createThrottlingStore,
 } from "./stores/cache.js";
 import type {
   ChannelInfo,
   EventBatch,
   FilterSpec,
   MontagePair,
+  ReadPriority,
   Segment,
   Store,
   StoreOptions,
@@ -73,9 +76,16 @@ export interface StreamingClientOptions {
   readonly maxCacheBytes?: number;
   /**
    * Cap on level reads in flight at once. Defaults to `MAX_INFLIGHT_FETCHES`. Raise it
-   * for a high-latency store, lower it for one that throttles.
+   * for a high-latency store.
    */
   readonly maxInflightFetches?: number;
+  /**
+   * Cap on transport requests in flight at once, counted after identical reads collapse
+   * and adjacent ranges merge. Defaults to `MAX_CONCURRENT_REQUESTS`. Lower it for a
+   * store that throttles; a value under the level-read cap adds a round trip per extra
+   * round.
+   */
+  readonly maxConcurrentRequests?: number;
 }
 
 /** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
@@ -101,6 +111,10 @@ export interface QueryOptions {
   /** Cap override in bytes for this query's forced-raw read. */
   readonly maxRawBytes?: number;
   /**
+   * How early this query's reads are admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  /**
    * Aborts this query's reads. An already-aborted signal rejects before any I/O. A catalog
    * load in flight for another query is shared and runs to completion.
    */
@@ -114,6 +128,10 @@ export interface UnitQueryOptions {
   readonly endUs: number;
   /** Time one pixel column covers. Gates whether waveforms are fetched. */
   readonly pixelWidthUs: number;
+  /**
+   * How early this query's reads are admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
   readonly signal?: AbortSignal;
 }
 
@@ -127,6 +145,11 @@ export interface DataSpanOptions {
    * splits.
    */
   readonly gapThresholdUs?: number;
+  /**
+   * How early this read is admitted. Defaults to `"background"`: an availability scan
+   * covers the whole recording and none of it is on screen.
+   */
+  readonly priority?: ReadPriority;
   readonly signal?: AbortSignal;
 }
 
@@ -178,7 +201,8 @@ interface Bundle {
  * gap wider than `FILTER_GAP_RESET_SAMPLES` sample periods restarts the filter for that
  * channel.
  *
- * Reads of pyramid levels share an in-flight concurrency cap. Unit-channel reads do not.
+ * Every read shares an in-flight concurrency cap, admitted by the priority its query
+ * carries, and passes through a second cap on transport requests.
  *
  * Store responses are cached for the client's lifetime, bounded by `maxCacheBytes`.
  */
@@ -186,7 +210,8 @@ export class StreamingClient {
   readonly #store: Store;
   readonly #maxRawBytes: number;
   readonly #maxCacheBytes: number;
-  readonly #limit: FetchLimit;
+  readonly #maxConcurrentRequests: number;
+  readonly #limit: PriorityLimit;
   readonly #filters: FilterSession;
   #bundle: Promise<Bundle> | undefined;
 
@@ -194,7 +219,9 @@ export class StreamingClient {
     this.#store = options.store;
     this.#maxRawBytes = options.maxRawBytes ?? MAX_RAW_BYTES;
     this.#maxCacheBytes = options.maxCacheBytes ?? MAX_CACHE_BYTES;
-    this.#limit = createFetchLimit(options.maxInflightFetches);
+    this.#maxConcurrentRequests =
+      options.maxConcurrentRequests ?? MAX_CONCURRENT_REQUESTS;
+    this.#limit = createPriorityLimit(options.maxInflightFetches);
     this.#filters = createFilterSession();
   }
 
@@ -250,14 +277,15 @@ export class StreamingClient {
       assertWithinByteCap(traces, params.maxRawBytes ?? this.#maxRawBytes);
     }
 
+    const priority = params.priority ?? "viewport";
     // Settling each read up front avoids unhandled rejections when iteration stops early.
     const started = traces.map((trace) => ({
       trace,
-      lead: this.#startRead(store, trace.read, opts),
+      lead: this.#startRead(store, trace.read, opts, priority),
       secondary:
         trace.secondaryRead === undefined
           ? undefined
-          : this.#startRead(store, trace.secondaryRead, opts),
+          : this.#startRead(store, trace.secondaryRead, opts, priority),
     }));
 
     for (const { trace, lead, secondary } of started) {
@@ -306,9 +334,12 @@ export class StreamingClient {
     const { catalog, store } = await this.#loadBundle();
     const opts = toStoreOptions(params.signal);
 
+    const priority = params.priority ?? "viewport";
     for (const id of params.channels) {
       const unit = unitArrays(catalog, id);
-      yield await queryUnitChannel(store, id, unit, params, opts);
+      yield await this.#limit(priority, () =>
+        queryUnitChannel(store, id, unit, params, opts),
+      );
     }
   }
 
@@ -333,7 +364,7 @@ export class StreamingClient {
     const level = entry.levels[entry.levels.length - 1]!;
 
     const read = planRead(entry, level, params);
-    const data = await this.#limit(() =>
+    const data = await this.#limit(params.priority ?? "background", () =>
       readBins(store, level.path, read.range, opts),
     );
 
@@ -379,8 +410,13 @@ export class StreamingClient {
   /** Reads the catalog and layers the store the bundle's arrays are read through. */
   async #openBundle(): Promise<Bundle> {
     // Identical concurrent reads collapse before adjacent distinct ones merge, so the
-    // coalescer only ever sees one request per distinct range.
-    const deduped = createDedupingStore(createCoalescingStore(this.#store));
+    // coalescer only ever sees one request per distinct range. The throttle sits under
+    // both, where the requests it counts are the ones the transport sends.
+    const deduped = createDedupingStore(
+      createCoalescingStore(
+        createThrottlingStore(this.#store, this.#maxConcurrentRequests),
+      ),
+    );
     const cached =
       this.#maxCacheBytes > 0
         ? createCachingStore(deduped, this.#maxCacheBytes)
@@ -468,8 +504,11 @@ export class StreamingClient {
     store: Store,
     read: PlannedRead,
     opts: StoreOptions | undefined,
+    priority: ReadPriority,
   ): Promise<SettledRead> {
-    return this.#limit(() => readBins(store, read.level.path, read.range, opts))
+    return this.#limit(priority, () =>
+      readBins(store, read.level.path, read.range, opts),
+    )
       .then((data): SettledRead => ({ ok: true, data }))
       .catch((error: unknown): SettledRead => ({ ok: false, error }));
   }

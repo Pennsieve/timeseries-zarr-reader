@@ -9,6 +9,7 @@ export type {
   EventBatch,
   FilterSpec,
   MontagePair,
+  ReadPriority,
   Segment,
   Store,
   StoreOptions,

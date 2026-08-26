@@ -4,6 +4,7 @@ import {
   withRangeCoalescing,
 } from "zarrita";
 import type { ByteRange, Store } from "../types.js";
+import { createFetchLimit } from "../fetch.js";
 
 /**
  * A bounded store of response bytes, keyed by request.
@@ -84,80 +85,166 @@ function readKey(path: string, range?: ByteRange): string {
     : `${path}\0r:${range.offset}:${range.length}`;
 }
 
-/**
- * Resolves with `pending`, or rejects as soon as `signal` aborts.
- *
- * Leaves `pending` running, since other callers may still be waiting on it.
- */
-function raceAbort(
-  pending: Promise<Uint8Array | undefined>,
-  signal: AbortSignal,
-): Promise<Uint8Array | undefined> {
-  return new Promise((resolve, reject) => {
-    const onAbort = (): void => {
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    const settle = (): void => {
-      signal.removeEventListener("abort", onAbort);
-    };
-    pending.then(
-      (value) => {
-        settle();
-        resolve(value);
-      },
-      (error: unknown) => {
-        settle();
-        reject(error);
-      },
-    );
-  });
+/** A read in flight, and the callers waiting on it. */
+interface SharedRead {
+  readonly bytes: Promise<Uint8Array | undefined>;
+  readonly controller: AbortController;
+  /** Callers waiting that have not aborted. */
+  waiting: number;
+  /** A caller that passed no signal joined, so the read runs to completion. */
+  pinned: boolean;
+}
+
+/** Whether a rejection is an abort rather than a transport failure. */
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "AbortError"
+  );
 }
 
 /**
  * Wraps a store so callers asking for the same bytes while a read is in flight share it.
  *
- * Two reads match when their key and byte range are equal. The shared read carries no
- * caller's `AbortSignal`: one caller aborting must not fail the others waiting on it, so
- * an abort rejects that caller and leaves the bytes to finish. A read that settles is
- * forgotten, so a later caller reads again and a failure is never retained.
+ * Two reads match when their key and byte range are equal. The shared read carries an
+ * `AbortSignal` of its own. One caller aborting rejects that caller and leaves the bytes
+ * to finish for the rest; the read itself is cancelled once every caller waiting on it
+ * has aborted, which is what stops a discarded viewport from holding the connection. A
+ * caller that passes no signal cannot abort, so it holds the read to completion for
+ * everyone. A read that settles is forgotten, so a later caller reads again and a failure
+ * is never retained.
  *
  * Layer this beneath {@link createCachingStore}: the cache answers what it already holds,
  * and this collapses the concurrent misses that reach past it.
  */
 export function createDedupingStore(store: Store): Store {
-  const inflight = new Map<string, Promise<Uint8Array | undefined>>();
+  const inflight = new Map<string, SharedRead>();
 
   const share = (
     key: string,
-    read: () => Promise<Uint8Array | undefined>,
+    read: (signal?: AbortSignal) => Promise<Uint8Array | undefined>,
     signal: AbortSignal | undefined,
   ): Promise<Uint8Array | undefined> => {
     if (signal?.aborted === true) {
       return Promise.reject(signal.reason);
     }
-    let pending = inflight.get(key);
-    if (pending === undefined) {
-      pending = read();
-      inflight.set(key, pending);
+
+    let entry = inflight.get(key);
+    if (entry?.controller.signal.aborted === true) {
+      // Cancelled, and still listed until its rejection settles. A caller arriving
+      // now wants these bytes, so it needs a read of its own rather than this one's
+      // guaranteed abort.
+      entry = undefined;
+    }
+    if (entry === undefined) {
+      const controller = new AbortController();
+      const bytes = read(controller.signal).catch((error: unknown) => {
+        // A neighbouring range merged with this one downstream shares one request,
+        // so its abort lands here too. Read again unsigned when this read was not
+        // the one cancelled.
+        if (!controller.signal.aborted && isAbortError(error)) {
+          return read();
+        }
+        throw error;
+      });
+      entry = { bytes, controller, waiting: 0, pinned: false };
+      inflight.set(key, entry);
       const forget = (): void => {
-        inflight.delete(key);
+        if (inflight.get(key) === entry) {
+          inflight.delete(key);
+        }
       };
       // Handling both outcomes here keeps a rejection no caller awaited from surfacing
       // as an unhandled rejection.
-      pending.then(forget, forget);
+      bytes.then(forget, forget);
     }
-    return signal === undefined ? pending : raceAbort(pending, signal);
+
+    const joined = entry;
+    if (signal === undefined) {
+      joined.pinned = true;
+      return joined.bytes;
+    }
+
+    const waiter = signal;
+    joined.waiting += 1;
+    return new Promise((resolve, reject) => {
+      const stopListening = (): void => {
+        waiter.removeEventListener("abort", onAbort);
+      };
+      function onAbort(): void {
+        joined.waiting -= 1;
+        if (joined.waiting === 0 && !joined.pinned) {
+          joined.controller.abort(waiter.reason);
+        }
+        reject(waiter.reason);
+      }
+      waiter.addEventListener("abort", onAbort, { once: true });
+      joined.bytes.then(
+        (value) => {
+          stopListening();
+          resolve(value);
+        },
+        (error: unknown) => {
+          stopListening();
+          reject(error);
+        },
+      );
+    });
   };
 
   return {
-    get: (key, opts) => share(readKey(key), () => store.get(key), opts?.signal),
+    get: (key, opts) =>
+      share(readKey(key), (signal) => store.get(key, { signal }), opts?.signal),
     getRange: (key, range, opts) =>
       share(
         readKey(key, range),
-        () => store.getRange(key, range),
+        (signal) => store.getRange(key, range, { signal }),
         opts?.signal,
       ),
+  };
+}
+
+/**
+ * Wraps a store so at most `maxConcurrent` reads are in flight, started in the order they
+ * were submitted.
+ *
+ * Layer this innermost, beneath {@link createCoalescingStore}. What reaches it is then
+ * one request per merged range, which is what the transport actually sends. Grouping is
+ * decided above it, so waiting for a slot delays a request without splitting a batch.
+ * Placing it above a layer that awaits a read would deadlock instead: the readers of one
+ * shard index all wait on the single read that fetches it, and that read needs a slot of
+ * its own.
+ *
+ * A caller whose signal aborts while queued rejects when its slot comes up, without
+ * reaching the store.
+ *
+ * Throws a TypeError when `maxConcurrent` is not a positive integer.
+ */
+export function createThrottlingStore(
+  store: Store,
+  maxConcurrent: number,
+): Store {
+  const limit = createFetchLimit(maxConcurrent);
+
+  const run = <T>(
+    task: () => Promise<T>,
+    signal: AbortSignal | undefined,
+  ): Promise<T> => {
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason);
+    }
+    return limit(() => {
+      // The wait for a slot can outlive the caller.
+      signal?.throwIfAborted();
+      return task();
+    });
+  };
+
+  return {
+    get: (key, opts) => run(() => store.get(key, opts), opts?.signal),
+    getRange: (key, range, opts) =>
+      run(() => store.getRange(key, range, opts), opts?.signal),
   };
 }
 
