@@ -1,6 +1,6 @@
 {
   "name": "@pennsieve/timeseries-zarr-reader",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Reads pyramid Zarr v3 time-series bundles in the browser or Node.js and yields per-channel segments for rendering.",
   "keywords": [
     "zarr",
