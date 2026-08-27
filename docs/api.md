@@ -18,6 +18,10 @@ flight, 64 by default. `maxConcurrentRequests` caps the requests those reads tur
 once identical reads have collapsed and adjacent ranges have merged, also 64 by
 default. Lower it for a store that throttles.
 
+Constructing a client reads nothing from the store and starts loading the zstd codec
+that decompresses chunks. The codec module carries its WebAssembly binary inline, so
+loading it early keeps that download off the first read.
+
 The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
 `UnitQueryOptions`, and `DataSpanOptions`.
 
