@@ -6,7 +6,7 @@ import {
   float64Chunk,
   int64Chunk,
 } from "./test-utils.js";
-import { openTimestamps, readBins, readRows } from "./zarr.js";
+import { openTimestamps, readBins, readRows, warmZstdCodec } from "./zarr.js";
 
 /** Unsharded fixture arrays for readBins, openTimestamps, and readRows. */
 const store = createMemoryStore({
@@ -143,4 +143,43 @@ test("rejects a row array whose dtype is not float32 or float64", async () => {
   await expect(
     readRows(store, "/rowsint", { start: 0, end: 1 }),
   ).rejects.toThrow(/must be float32 or float64 \(got int64\)/);
+});
+
+test("warms the zstd codec by encoding through its registry entry", async () => {
+  const encoded: Uint8Array[] = [];
+  const warmed = await warmZstdCodec(
+    new Map([
+      [
+        "zstd",
+        () =>
+          Promise.resolve({
+            fromConfig: () => ({
+              kind: "bytes_to_bytes",
+              encode: (data: Uint8Array) => {
+                encoded.push(data);
+                return Promise.resolve(data);
+              },
+              decode: (data: Uint8Array) => Promise.resolve(data),
+            }),
+          }),
+      ],
+    ]),
+  );
+  expect(warmed).toBe(true);
+  expect(encoded).toEqual([new Uint8Array(0)]);
+});
+
+test("reports no warmup when the registry carries no zstd entry", async () => {
+  await expect(warmZstdCodec(new Map())).resolves.toBe(false);
+});
+
+test("reports no warmup when the codec fails to load", async () => {
+  const codecs = new Map([
+    ["zstd", () => Promise.reject(new Error("chunk load failed"))],
+  ]);
+  await expect(warmZstdCodec(codecs)).resolves.toBe(false);
+});
+
+test("warms the codec the default registry carries", async () => {
+  await expect(warmZstdCodec()).resolves.toBe(true);
 });

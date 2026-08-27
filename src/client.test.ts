@@ -159,6 +159,17 @@ const LOWPASS = { type: "lowpass", order: 4, cutoffHz: 100 } as const;
 const LOWPASS_512 = { type: "lowpass", order: 4, cutoffHz: 50 } as const;
 
 describe("catalog", () => {
+  test("reads nothing from the store on construction", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+
+    new StreamingClient({ store: counting.store });
+    await Promise.resolve();
+
+    expect(counting.total()).toBe(0);
+  });
+
   test("channelInfo lists every channel from a single root read", async () => {
     let rootReads = 0;
     const inner = createMemoryStore(bundleFiles(CHANNELS));

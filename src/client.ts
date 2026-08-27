@@ -35,7 +35,7 @@ import type {
   StoreOptions,
 } from "./types.js";
 import { queryUnitChannel } from "./unit.js";
-import { readBins } from "./zarr.js";
+import { readBins, warmZstdCodec } from "./zarr.js";
 
 /** Bytes per raw sample on disk. */
 const BYTES_PER_RAW_SAMPLE = 4;
@@ -193,8 +193,9 @@ interface Bundle {
 /**
  * Reads one bundle by channel id and time window.
  *
- * The constructor performs no I/O. The catalog is read on first use and cached for the
- * client's lifetime.
+ * The constructor reads nothing from the store. It starts loading the codec that
+ * decompresses chunks. The catalog is read on first use and cached for the client's
+ * lifetime.
  *
  * Filter state also lives for the client's lifetime. Queries over adjacent windows filter as
  * one continuous signal, whether or not their seam falls on a sample. A jump backwards or a
@@ -223,6 +224,7 @@ export class StreamingClient {
       options.maxConcurrentRequests ?? MAX_CONCURRENT_REQUESTS;
     this.#limit = createPriorityLimit(options.maxInflightFetches);
     this.#filters = createFilterSession();
+    void warmZstdCodec();
   }
 
   /** Returns per-channel info for every channel in the bundle. Returned objects are copies. */

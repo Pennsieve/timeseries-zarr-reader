@@ -1,4 +1,4 @@
-import { get, NotFoundError, open, root, slice } from "zarrita";
+import { get, NotFoundError, open, registry, root, slice } from "zarrita";
 import type { Store, StoreOptions } from "./types.js";
 
 /**
@@ -167,4 +167,40 @@ export async function readRows(
   }
   const region = await get(array, [slice(range.start, range.end), null], opts);
   return { data: Float64Array.from(region.data), rowLength };
+}
+
+/**
+ * Loads and instantiates the zstd codec that decompresses bundle chunks.
+ *
+ * The codec module carries its WebAssembly binary inline and loads on first use, so
+ * the first chunk read otherwise waits for that download. Encoding an empty buffer
+ * finishes the instantiation.
+ *
+ * Never rejects. Resolves false when the registry holds no zstd entry and when the
+ * load fails; the read that needs the codec reports the failure.
+ *
+ * `codecs` defaults to zarrita's codec registry.
+ *
+ * @returns whether the codec is ready to decode.
+ */
+export async function warmZstdCodec(
+  codecs: typeof registry = registry,
+): Promise<boolean> {
+  try {
+    const load = codecs.get("zstd");
+    if (!load) {
+      return false;
+    }
+    const entry = await load();
+    // The codec reads the level from its config and ignores the chunk metadata, which
+    // the registry's signature requires.
+    const codec = entry.fromConfig(
+      { level: 1 },
+      { dataType: "float32", shape: [1], codecs: [], fillValue: null },
+    );
+    await codec.encode(new Uint8Array(0));
+    return true;
+  } catch {
+    return false;
+  }
 }
