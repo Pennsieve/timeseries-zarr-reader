@@ -14,7 +14,7 @@ import {
 import type { PriorityLimit } from "./fetch.js";
 import { createPriorityLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
-import { createFilterSession } from "./filter.js";
+import { assertFilterSpec, createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
 import { resampleToPixels } from "./resample.js";
 import {
@@ -41,9 +41,9 @@ import { readBins, warmZstdCodec } from "./zarr.js";
 const BYTES_PER_RAW_SAMPLE = 4;
 
 /**
- * Thrown when a forced-raw read would exceed the byte cap.
+ * Thrown when a query's reads of the raw level would exceed the byte cap.
  *
- * Raised before any data is fetched. `requestedBytes` is the size the read would have
+ * Raised before any data is fetched. `requestedBytes` is the size the reads would have
  * fetched, and `maxBytes` is the cap in effect.
  */
 export class RawReadTooLargeError extends Error {
@@ -65,8 +65,9 @@ export class RawReadTooLargeError extends Error {
 export interface StreamingClientOptions {
   readonly store: Store;
   /**
-   * Cap in bytes on forced-raw reads, overridable per query. Defaults to
-   * `MAX_RAW_BYTES`.
+   * Cap in bytes on a query's reads of the raw level, whether a filter, a montage, or
+   * `raw` forced them or the pixel width selected them. Overridable per query. Defaults
+   * to `MAX_RAW_BYTES`.
    */
   readonly maxRawBytes?: number;
   /**
@@ -108,7 +109,7 @@ export interface QueryOptions {
   readonly montage?: readonly MontagePair[];
   /** Butterworth filter applied to every trace. Forces a raw read. */
   readonly filter?: FilterSpec;
-  /** Cap override in bytes for this query's forced-raw read. */
+  /** Cap override in bytes for this query's reads of the raw level. */
   readonly maxRawBytes?: number;
   /**
    * How early this query's reads are admitted. Defaults to `"viewport"`.
@@ -238,11 +239,11 @@ export class StreamingClient {
    * order.
    *
    * Each trace reads the coarsest pyramid level whose bins fit within one pixel. A filter,
-   * a montage, or `raw: true` forces the raw level. A forced-raw read over the byte cap
-   * throws {@link RawReadTooLargeError}. Unless `raw` is set, output is resampled onto the
-   * pixel grid when one pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins. That
-   * grid is anchored at the channel start, so every window over a channel resamples onto
-   * the same buckets.
+   * a montage, or `raw: true` forces the raw level. Reads of the raw level totaling more
+   * than the byte cap throw {@link RawReadTooLargeError}, whether forced or selected by
+   * the pixel width. Unless `raw` is set, output is resampled onto the pixel grid when one
+   * pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins. That grid is anchored at the
+   * channel start, so every window over a channel resamples onto the same buckets.
    *
    * Segments are delivered on bin boundaries, so one may begin before `startUs` or end
    * after `endUs` by less than one of its own bins. A filtered segment continuing from the
@@ -251,8 +252,12 @@ export class StreamingClient {
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
    * unknown channel id, a unit channel, a montage pair whose rates or sample grids differ,
-   * a non-positive `pixelWidthUs`, or an `endUs` before `startUs`. Calling `query` does
-   * not throw; rejections arrive on the first iteration.
+   * a filter spec outside a trace's Nyquist range, a non-positive `pixelWidthUs`, or an
+   * `endUs` before `startUs`. Every rejection of the request itself happens before any
+   * read starts. Calling `query` does not throw; rejections arrive on the first iteration.
+   *
+   * A read that fails rejects the iteration and cancels the reads of the traces not yet
+   * yielded, as does a consumer that stops iterating early.
    */
   async *query(params: QueryOptions): AsyncGenerator<Segment, void, undefined> {
     params.signal?.throwIfAborted();
@@ -266,7 +271,6 @@ export class StreamingClient {
 
     const forceRaw = params.filter !== undefined || montage.length > 0 || raw;
     const { catalog, store } = await this.#loadBundle();
-    const opts = toStoreOptions(params.signal);
 
     const traces =
       montage.length > 0
@@ -275,9 +279,24 @@ export class StreamingClient {
             this.#planChannel(catalog, id, params, forceRaw),
           );
 
-    if (forceRaw) {
-      assertWithinByteCap(traces, params.maxRawBytes ?? this.#maxRawBytes);
+    // Every check of the request runs before the first read starts. A spec the filter
+    // would reject on the first segment would otherwise leave every other trace's read
+    // running with nothing to await it.
+    if (params.filter !== undefined) {
+      for (const rateHz of new Set(traces.map((trace) => trace.rateHz))) {
+        assertFilterSpec(params.filter, rateHz);
+      }
     }
+    assertWithinByteCap(traces, params.maxRawBytes ?? this.#maxRawBytes);
+
+    // One signal for every read of the query: the caller's abort reaches it, and so
+    // does the query ending before every read was awaited.
+    const reads = new AbortController();
+    const forwardAbort = (): void => {
+      reads.abort(params.signal?.reason);
+    };
+    params.signal?.addEventListener("abort", forwardAbort, { once: true });
+    const opts: StoreOptions = { signal: reads.signal };
 
     const priority = params.priority ?? "viewport";
     // Settling each read up front avoids unhandled rejections when iteration stops early.
@@ -290,33 +309,44 @@ export class StreamingClient {
           : this.#startRead(store, trace.secondaryRead, opts, priority),
     }));
 
-    for (const { trace, lead, secondary } of started) {
-      const first = unwrapRead(await lead);
-      const second =
-        secondary === undefined ? undefined : unwrapRead(await secondary);
+    let drained = false;
+    try {
+      for (const { trace, lead, secondary } of started) {
+        const first = unwrapRead(await lead);
+        const second =
+          secondary === undefined ? undefined : unwrapRead(await secondary);
 
-      let segment: Segment = {
-        channel: trace.channel,
-        startUs: trace.read.startUs,
-        samplePeriodUs: trace.read.level.periodUs,
-        isMinMax: trace.read.level.isMinMax,
-        data: second === undefined ? first : subtract(first, second),
-      };
+        let segment: Segment = {
+          channel: trace.channel,
+          startUs: trace.read.startUs,
+          samplePeriodUs: trace.read.level.periodUs,
+          isMinMax: trace.read.level.isMinMax,
+          data: second === undefined ? first : subtract(first, second),
+        };
 
-      if (params.filter) {
-        segment = this.#filters.apply(segment, params.filter, trace.rateHz);
+        if (params.filter) {
+          segment = this.#filters.apply(segment, params.filter, trace.rateHz);
+        }
+        if (
+          !raw &&
+          params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
+        ) {
+          segment = resampleToPixels(
+            segment,
+            params.pixelWidthUs,
+            trace.channelStartUs,
+          );
+        }
+        yield segment;
       }
-      if (
-        !raw &&
-        params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
-      ) {
-        segment = resampleToPixels(
-          segment,
-          params.pixelWidthUs,
-          trace.channelStartUs,
-        );
+      drained = true;
+    } finally {
+      params.signal?.removeEventListener("abort", forwardAbort);
+      if (!drained) {
+        // A failed read, or a consumer that stopped iterating: the reads of the traces
+        // not yet yielded have no one left to await them.
+        reads.abort();
       }
-      yield segment;
     }
   }
 
@@ -551,7 +581,10 @@ function requireOneTraceSource(
   }
 }
 
-/** Throws {@link RawReadTooLargeError} when the planned reads total more than `cap` bytes. */
+/**
+ * Throws {@link RawReadTooLargeError} when the planned reads of the raw level total more
+ * than `cap` bytes. Min/max levels are bounded by the pixel width and do not count.
+ */
 function assertWithinByteCap(
   traces: readonly PlannedTrace[],
   cap: number,
@@ -568,8 +601,11 @@ function assertWithinByteCap(
   }
 }
 
-/** Returns the size of a planned read in bytes. */
+/** Returns the size of a planned raw-level read in bytes, and 0 for a min/max level. */
 function readBytes(read: PlannedRead): number {
+  if (read.level.isMinMax) {
+    return 0;
+  }
   return (read.range.end - read.range.start) * BYTES_PER_RAW_SAMPLE;
 }
 

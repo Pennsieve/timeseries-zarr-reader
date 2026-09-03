@@ -8,7 +8,7 @@ import {
   createCountingStore,
   createMemoryStore,
 } from "./test-utils.js";
-import type { ChannelInfo, Store } from "./types.js";
+import type { ChannelInfo, Store, StoreOptions } from "./types.js";
 import { openBundle, RawReadTooLargeError, StreamingClient } from "./index.js";
 
 /** Collects an async iterable and asserts it yielded exactly one item. */
@@ -43,6 +43,30 @@ function withFailingKey(store: Store, key: `/${string}`): Store {
     get: (path, opts) => (path === key ? fail() : store.get(path, opts)),
     getRange: (path, range, opts) =>
       path === key ? fail() : store.getRange(path, range, opts),
+  };
+}
+
+/**
+ * Wraps a store so reads of the `held` keys never settle, recording the signal each
+ * arrived with, so a test can see which reads the client cancelled.
+ */
+function withHeldKeys(
+  store: Store,
+  held: ReadonlySet<string>,
+): { store: Store; signals: Map<string, AbortSignal | undefined> } {
+  const signals = new Map<string, AbortSignal | undefined>();
+  const hold = (key: string, opts?: StoreOptions): Promise<never> => {
+    signals.set(key, opts?.signal);
+    return new Promise<never>(() => {});
+  };
+  return {
+    signals,
+    store: {
+      get: (key, opts) =>
+        held.has(key) ? hold(key, opts) : store.get(key, opts),
+      getRange: (key, range, opts) =>
+        held.has(key) ? hold(key, opts) : store.getRange(key, range, opts),
+    },
   };
 }
 
@@ -777,6 +801,148 @@ describe("byte cap", () => {
     );
     expect(segment.data.length).toBe(32);
   });
+
+  test("applies the cap to a read that selects the raw level through the pixel width", async () => {
+    const client = makeClient(64);
+    await expect(
+      collect(client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 })),
+    ).rejects.toThrow(RawReadTooLargeError);
+  });
+
+  test("does not count a min/max level against the cap", async () => {
+    const client = makeClient(64);
+    const segment = await collectOne(
+      client.query({ channels: ["a"], ...FULL, pixelWidthUs: 4000 }),
+    );
+    expect(segment.isMinMax).toBe(true);
+    expect(segment.data.length).toBe(16);
+  });
+});
+
+describe("reads a query does not finish", () => {
+  test("rejects a filter spec outside a trace's Nyquist range before any read", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+    await client.channelInfo();
+    const before = counting.total();
+
+    await expect(
+      collect(
+        client.query({
+          channels: ["a", "b"],
+          ...FULL,
+          pixelWidthUs: 1000,
+          filter: { type: "lowpass", order: 4, cutoffHz: 600 },
+        }),
+      ),
+    ).rejects.toThrow(RangeError);
+
+    expect(counting.total()).toBe(before);
+  });
+
+  test("cancels the other traces' reads when one read fails", async () => {
+    const held = withHeldKeys(
+      withFailingKey(createMemoryStore(bundleFiles(CHANNELS)), "/1/0/c/0"),
+      new Set(["/2/0/c/0"]),
+    );
+    const client = new StreamingClient({ store: held.store });
+
+    await expect(
+      collect(
+        client.query({
+          channels: ["a", "b", "c"],
+          ...FULL,
+          pixelWidthUs: 1000,
+        }),
+      ),
+    ).rejects.toThrow("read of /1/0/c/0 failed");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pending = held.signals.get("/2/0/c/0");
+    expect(pending?.aborted).toBe(true);
+  });
+
+  test("cancels the remaining reads when the consumer stops iterating", async () => {
+    const held = withHeldKeys(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      new Set(["/1/0/c/0", "/2/0/c/0"]),
+    );
+    const client = new StreamingClient({ store: held.store });
+
+    for await (const segment of client.query({
+      channels: ["a", "b", "c"],
+      ...FULL,
+      pixelWidthUs: 1000,
+    })) {
+      expect(segment.channel).toBe("a");
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(held.signals.size).toBeGreaterThan(0);
+    for (const signal of held.signals.values()) {
+      expect(signal?.aborted).toBe(true);
+    }
+  });
+
+  test("leaves the reads running while the consumer is still iterating", async () => {
+    const held = withHeldKeys(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      new Set(["/2/0/c/0"]),
+    );
+    const client = new StreamingClient({ store: held.store });
+    const iterator = client
+      .query({ channels: ["a", "c"], ...FULL, pixelWidthUs: 1000 })
+      [Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(held.signals.get("/2/0/c/0")?.aborted).toBe(false);
+    await iterator.return(undefined);
+  });
+});
+
+describe("chunked levels", () => {
+  const chunked: BundleChannel[] = [
+    {
+      path: "0",
+      attributes: attrs("k", "K", 1000),
+      levels: [
+        { periodUs: 1000, samples: RAW_A, chunkLength: 8 },
+        { periodUs: 4000, pairs: pairsOf(RAW_A, 4), chunkLength: 3 },
+      ],
+    },
+  ];
+
+  test("reads a raw window that crosses chunk boundaries", async () => {
+    const client = new StreamingClient({
+      store: createMemoryStore(bundleFiles(chunked)),
+    });
+    const segment = await collectOne(
+      client.query({
+        channels: ["k"],
+        startUs: 1_006_000,
+        endUs: 1_018_000,
+        pixelWidthUs: 1000,
+      }),
+    );
+    expect(segment.startUs).toBe(1_006_000);
+    expect(Array.from(segment.data)).toEqual(RAW_A.slice(6, 18));
+  });
+
+  test("reads a min/max level whose last chunk is partial", async () => {
+    const client = new StreamingClient({
+      store: createMemoryStore(bundleFiles(chunked)),
+    });
+    const segment = await collectOne(
+      client.query({ channels: ["k"], ...FULL, pixelWidthUs: 4000 }),
+    );
+    expect(Array.from(segment.data)).toEqual(pairsOf(RAW_A, 4));
+  });
 });
 
 describe("queryUnits", () => {
@@ -1038,6 +1204,37 @@ describe("in-flight cap", () => {
     );
 
     expect(tracked.peak()).toBeGreaterThan(2);
+  });
+
+  test("yields every trace in order when there are more traces than the cap", async () => {
+    const count = 130;
+    const many: BundleChannel[] = Array.from({ length: count }, (_, i) => ({
+      path: String(i),
+      attributes: attrs(`ch${i}`, `Channel ${i}`, 1000),
+      levels: [
+        { periodUs: 1000, samples: Array.from({ length: 8 }, (_, j) => i + j) },
+      ],
+    }));
+    const tracked = trackConcurrency(createMemoryStore(bundleFiles(many)));
+    const client = new StreamingClient({
+      store: tracked.store,
+      maxCacheBytes: 0,
+    });
+
+    const segments = await collect(
+      client.query({
+        channels: many.map((channel) => channel.attributes.id as string),
+        ...FULL,
+        pixelWidthUs: 1000,
+      }),
+    );
+
+    expect(segments).toHaveLength(count);
+    segments.forEach((segment, i) => {
+      expect(segment.channel).toBe(`ch${i}`);
+      expect(segment.data[0]).toBe(i);
+    });
+    expect(tracked.peak()).toBeLessThanOrEqual(64);
   });
 });
 

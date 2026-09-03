@@ -8,9 +8,10 @@ windows are half-open, `[startUs, endUs)`.
 
 Takes `{ store, maxRawBytes?, maxCacheBytes?, maxInflightFetches?,
 maxConcurrentRequests? }`. `store` is any
-object implementing the `Store` type. `maxRawBytes` caps forced-raw reads (a filter, a
-montage, or `raw: true`), 15 MB by default, and each query can override it; a read that
-selects the raw level through zoom alone is not capped. `maxCacheBytes` caps the
+object implementing the `Store` type. `maxRawBytes` caps a query's reads of the raw level,
+15 MB by default, and each query can override it. The cap applies whether a filter, a
+montage, or `raw: true` forced the raw level or the pixel width selected it; min/max
+levels are bounded by the pixel width and do not count. `maxCacheBytes` caps the
 client's cache of store responses, 64 MiB by default. Zero removes the cache layer;
 identical in-flight reads still collapse, same-microtask ranges still merge, and the
 bundle root is read twice on open. `maxInflightFetches` caps level reads in
@@ -77,11 +78,18 @@ bucket apart.
 
 ### The raw-read byte cap
 
-`maxRawBytes` bounds every forced-raw read. The figure counted is the uncompressed size of
-the samples requested, summed across traces, and both sides of a montage pair count.
+`maxRawBytes` bounds a query's reads of the raw level, forced or selected. The figure
+counted is the uncompressed size of the raw samples requested, summed across traces, and
+both sides of a montage pair count. A pixel width that selects a min/max level reads a
+bounded number of bins and is not counted.
 
 A read over the cap rejects with `RawReadTooLargeError` before fetching anything. The
 error carries `requestedBytes` and `maxBytes`. Narrow the window or raise `maxRawBytes`.
+
+Every check of a request runs before its first read starts: an unknown channel, a
+misaligned montage pair, a filter spec outside a trace's Nyquist range, and the byte cap
+all reject with no I/O. A read that fails rejects the iteration and cancels the reads of
+the traces not yet yielded. A consumer that stops iterating early cancels them too.
 
 ### The response cache
 
@@ -108,9 +116,9 @@ passes no signal cannot abort, and holds the read to completion for everyone.
 
 A query reads one level per trace, and each read costs at least one round trip. Reads run
 under `maxInflightFetches`, so a query serializes into `ceil(traces / maxInflightFetches)`
-rounds. Against a store with 200 ms of latency, 64 traces at a cap of 8 spend 1.6 seconds
-in round trips alone, whatever the bytes involved. Keep the cap at or above the number of
-traces a view puts on screen.
+rounds. Against a store with 200 ms of latency, 130 traces at the default cap of 64 take
+three rounds and spend 0.6 seconds in round trips alone, whatever the bytes involved. Keep
+the cap at or above the number of traces a view puts on screen.
 
 Reads are admitted highest priority first. A query takes `priority`, one of `viewport`,
 `prefetch` or `background`, defaulting to `viewport`; `dataSpans` defaults to
@@ -181,7 +189,10 @@ every gap.
 
 Picks a built-in store by scheme or path form:
 
-- `http://` and `https://` URLs get `FetchStore`, which is also exported.
+- `http://` and `https://` URLs get `FetchStore`, which is also exported. The store is
+  built with `useSuffixRequest`, so a shard index costs one `Range: bytes=-N` request
+  rather than a HEAD and an offset range; a consumer building its own `FetchStore` should
+  pass the same option.
 - `file://` URLs and absolute paths, POSIX (`/bundle.zarr`) or Windows drive-letter
   (`C:\bundle.zarr`), get the filesystem store. It is imported lazily and stays out of
   browser bundles.

@@ -19,10 +19,11 @@ async function loadFileStore(path: string): Promise<Store> {
 /**
  * Returns a `Store` for a bundle location, chosen by its scheme or path form.
  *
- * `http://` and `https://` URLs use `FetchStore`. `file://` URLs and absolute filesystem
- * paths, POSIX or Windows drive-letter, use `FileStore`. `FileStore` is imported
- * dynamically; a browser bundle never loads `node:fs`. Relative paths and unrecognized
- * schemes throw.
+ * `http://` and `https://` URLs use `FetchStore`, asking for a shard index with one
+ * suffix range request rather than a HEAD followed by an offset range. `file://` URLs
+ * and absolute filesystem paths, POSIX or Windows drive-letter, use `FileStore`.
+ * `FileStore` is imported dynamically; a browser bundle never loads `node:fs`. Relative
+ * paths and unrecognized schemes throw.
  *
  * Neither built-in store sends credentials. The consumer constructs an authenticating
  * store and passes it as a `Store`.
@@ -42,7 +43,7 @@ export async function openBundle(url: string): Promise<Store> {
   }
 
   if (location.protocol === "http:" || location.protocol === "https:") {
-    return new FetchStore(url);
+    return new FetchStore(url, { useSuffixRequest: true });
   }
   if (location.protocol === "file:") {
     const { fileURLToPath } = await import("node:url");
