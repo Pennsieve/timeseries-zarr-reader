@@ -68,6 +68,27 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
     : cascades.bandstop(params);
 }
 
+/** Throws a RangeError for an `order` that is not a whole number from 1 to `MAX_ORDER`. */
+function requireOrder(order: number): void {
+  if (!Number.isInteger(order) || order < 1 || order > MAX_ORDER) {
+    throw new RangeError(
+      `order must be a whole number from 1 to ${MAX_ORDER} (got ${order})`,
+    );
+  }
+}
+
+/**
+ * Checks a spec against a channel's sampling rate without building a filter.
+ *
+ * Throws the RangeError {@link createFilter} throws for the same spec and rate:
+ * an `order` that is not an integer from 1 to 12, a frequency not strictly
+ * between 0 and half `rateHz`, or a `lowHz` at or above its `highHz`.
+ */
+export function assertFilterSpec(spec: FilterSpec, rateHz: number): void {
+  requireOrder(spec.order);
+  designCoefficients(spec, rateHz);
+}
+
 /**
  * Builds a Butterworth filter for one channel.
  *
@@ -81,16 +102,7 @@ function designCoefficients(spec: FilterSpec, rateHz: number) {
  * its `highHz`.
  */
 export function createFilter(spec: FilterSpec, rateHz: number): Filter {
-  if (
-    !Number.isInteger(spec.order) ||
-    spec.order < 1 ||
-    spec.order > MAX_ORDER
-  ) {
-    throw new RangeError(
-      `order must be a whole number from 1 to ${MAX_ORDER} (got ${spec.order})`,
-    );
-  }
-
+  requireOrder(spec.order);
   const filter = new IirFilter(designCoefficients(spec, rateHz));
   return {
     process: (samples) => Float64Array.from(filter.multiStep(samples)),

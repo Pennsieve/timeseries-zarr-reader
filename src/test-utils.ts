@@ -143,6 +143,8 @@ export function int64Chunk(values: Array<number | bigint>): Uint8Array {
 export interface FixtureLevel {
   shape: number[];
   periodUs: number;
+  /** Chunk shape along every axis. Defaults to `shape`, one chunk for the level. */
+  chunkShape?: number[];
 }
 
 /** A non-level child array of a fixture channel. */
@@ -193,7 +195,7 @@ export function bundleMetadata(
     (channel.levels ?? []).forEach((level, index) => {
       metadata[`${channel.path}/${index}`] = arrayNode(
         level.shape,
-        level.shape,
+        level.chunkShape ?? level.shape,
         { period_us: level.periodUs },
         "float32",
       );
@@ -223,10 +225,16 @@ export function bundleMetadata(
   });
 }
 
-/** One pyramid level with its data: raw samples, or flattened [min, max, ...] pairs. */
+/**
+ * One pyramid level with its data: raw samples, or flattened [min, max, ...] pairs.
+ *
+ * `chunkLength` splits the time axis into chunks of that many bins, each its own store
+ * key, so a read across a chunk boundary exercises more than one key. The default is one
+ * chunk holding the level.
+ */
 export type BundleLevel =
-  | { periodUs: number; samples: number[] }
-  | { periodUs: number; pairs: number[] };
+  | { periodUs: number; samples: number[]; chunkLength?: number }
+  | { periodUs: number; pairs: number[]; chunkLength?: number };
 
 /** One channel of a complete in-memory bundle. */
 export interface BundleChannel {
@@ -255,15 +263,29 @@ export function bundleFiles(
     (channel.levels ?? []).forEach((level, index) => {
       const raw = "samples" in level;
       const values = raw ? level.samples : level.pairs;
-      const shape = raw ? [values.length] : [values.length / 2, 2];
-      levels.push({ shape, periodUs: level.periodUs });
+      const width = raw ? 1 : 2;
+      const bins = values.length / width;
+      const chunkBins = level.chunkLength ?? bins;
+      const shape = raw ? [bins] : [bins, 2];
+      const chunkShape = raw ? [chunkBins] : [chunkBins, 2];
+      levels.push({ shape, periodUs: level.periodUs, chunkShape });
       files[`/${channel.path}/${index}/zarr.json`] = arrayMetadata(
         shape,
-        shape,
+        chunkShape,
         { period_us: level.periodUs },
       );
-      files[`/${channel.path}/${index}/c/${raw ? "0" : "0/0"}`] =
-        float32Chunk(values);
+      for (let chunk = 0; chunk * chunkBins < bins; chunk++) {
+        const slice = values.slice(
+          chunk * chunkBins * width,
+          (chunk + 1) * chunkBins * width,
+        );
+        // A trailing partial chunk is padded to the chunk shape, as Zarr stores it.
+        const padded = slice.concat(
+          new Array<number>(chunkBins * width - slice.length).fill(0),
+        );
+        files[`/${channel.path}/${index}/c/${chunk}${raw ? "" : "/0"}`] =
+          float32Chunk(padded);
+      }
     });
 
     const extraArrays: Record<string, FixtureArray> = {};

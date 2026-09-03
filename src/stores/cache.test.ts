@@ -319,7 +319,7 @@ describe("createDedupingStore", () => {
     expect(await kept).toHaveLength(8);
   });
 
-  test("reads again unsigned when a merged neighbour aborts the shared read", async () => {
+  test("reads again under a live signal when a merged neighbour aborts the shared read", async () => {
     let reads = 0;
     const seen: Array<AbortSignal | undefined> = [];
     const store: Store = {
@@ -338,7 +338,39 @@ describe("createDedupingStore", () => {
 
     expect(await deduped.get("/zarr.json")).toHaveLength(8);
     expect(reads).toBe(2);
-    expect(seen.filter((signal) => signal === undefined)).toHaveLength(1);
+    expect(seen[1]).toBeDefined();
+    expect(seen[1]?.aborted).toBe(false);
+    expect(seen[1]).not.toBe(seen[0]);
+  });
+
+  test("cancels the re-read when the last waiting caller aborts", async () => {
+    let reads = 0;
+    const seen: Array<AbortSignal | undefined> = [];
+    const store: Store = {
+      get: (_key, opts) => {
+        reads += 1;
+        seen.push(opts?.signal);
+        if (reads === 1) {
+          return Promise.reject(
+            Object.assign(new Error("aborted"), { name: "AbortError" }),
+          );
+        }
+        // The re-read stays in flight until the test looks at its signal.
+        return new Promise(() => {});
+      },
+      getRange: async () => undefined,
+    };
+    const deduped = createDedupingStore(store);
+    const caller = new AbortController();
+
+    const pending = deduped.get("/zarr.json", { signal: caller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reads).toBe(2);
+    expect(seen[1]?.aborted).toBe(false);
+
+    caller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(seen[1]?.aborted).toBe(true);
   });
 
   test("starts a new read when the shared one was already cancelled", async () => {

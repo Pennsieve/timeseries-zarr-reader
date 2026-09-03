@@ -18,6 +18,7 @@ const BUNDLE = fileURLToPath(
 
 let server: Server | undefined;
 let baseUrl = "";
+let headRequests = 0;
 
 beforeAll(async () => {
   server = createServer((request, response) => {
@@ -34,6 +35,7 @@ beforeAll(async () => {
       }
 
       if (request.method === "HEAD") {
+        headRequests += 1;
         response.writeHead(200, { "content-length": data.length }).end();
         return;
       }
@@ -108,4 +110,22 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
 
   const spans = { channel: info.id, ...window };
   expect(await remote.dataSpans(spans)).toEqual(await local.dataSpans(spans));
+});
+
+test("reads a shard index with one suffix range request and never a HEAD", async () => {
+  headRequests = 0;
+  const remote = new StreamingClient({ store: await openBundle(baseUrl) });
+  const [info] = await remote.channelInfo();
+  if (!info) throw new Error("bundle has no channels");
+
+  await collect(
+    remote.query({
+      channels: [info.id],
+      startUs: info.startUs,
+      endUs: info.startUs + 1_000_000,
+      pixelWidthUs: 1000,
+    }),
+  );
+
+  expect(headRequests).toBe(0);
 });

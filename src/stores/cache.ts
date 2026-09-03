@@ -88,7 +88,8 @@ function readKey(path: string, range?: ByteRange): string {
 /** A read in flight, and the callers waiting on it. */
 interface SharedRead {
   readonly bytes: Promise<Uint8Array | undefined>;
-  readonly controller: AbortController;
+  /** Cancels the request in flight. Replaced when a merged neighbour's abort forces a re-read. */
+  controller: AbortController;
   /** Callers waiting that have not aborted. */
   waiting: number;
   /** A caller that passed no signal joined, so the read runs to completion. */
@@ -112,8 +113,10 @@ function isAbortError(error: unknown): boolean {
  * to finish for the rest; the read itself is cancelled once every caller waiting on it
  * has aborted, which is what stops a discarded viewport from holding the connection. A
  * caller that passes no signal cannot abort, so it holds the read to completion for
- * everyone. A read that settles is forgotten, so a later caller reads again and a failure
- * is never retained.
+ * everyone. A read cancelled from below, by a neighbouring range merged into the same
+ * request, is read again under a fresh signal the remaining callers still control. A
+ * read that settles is forgotten, so a later caller reads again and a failure is never
+ * retained.
  *
  * Layer this beneath {@link createCachingStore}: the cache answers what it already holds,
  * and this collapses the concurrent misses that reach past it.
@@ -138,17 +141,23 @@ export function createDedupingStore(store: Store): Store {
       entry = undefined;
     }
     if (entry === undefined) {
-      const controller = new AbortController();
-      const bytes = read(controller.signal).catch((error: unknown) => {
+      const fresh: Omit<SharedRead, "bytes"> = {
+        controller: new AbortController(),
+        waiting: 0,
+        pinned: false,
+      };
+      const bytes = read(fresh.controller.signal).catch((error: unknown) => {
         // A neighbouring range merged with this one downstream shares one request,
-        // so its abort lands here too. Read again unsigned when this read was not
-        // the one cancelled.
-        if (!controller.signal.aborted && isAbortError(error)) {
-          return read();
+        // so its abort lands here too. When this read was not the one cancelled, read
+        // again under a new controller, so the callers still waiting can cancel the
+        // re-read the way they could the first.
+        if (!fresh.controller.signal.aborted && isAbortError(error)) {
+          fresh.controller = new AbortController();
+          return read(fresh.controller.signal);
         }
         throw error;
       });
-      entry = { bytes, controller, waiting: 0, pinned: false };
+      entry = Object.assign(fresh, { bytes });
       inflight.set(key, entry);
       const forget = (): void => {
         if (inflight.get(key) === entry) {

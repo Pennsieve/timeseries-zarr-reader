@@ -53,8 +53,9 @@ for await (const segment of client.query({
   unit.
 - The reader picks the coarsest pyramid level that fits the requested pixel width. A
   montage, a filter, or `raw: true` forces a raw read instead.
-- Forced-raw reads are capped at 15 MB and reject with `RawReadTooLargeError` before
-  fetching. A read that lands on the raw level through zoom alone is not capped.
+- Reads of the raw level are capped at 15 MB per query and reject with
+  `RawReadTooLargeError` before fetching, whether a filter, a montage, or `raw: true`
+  forced the raw level or the pixel width selected it.
 - Segments are delivered on bin boundaries, so a segment can start before `startUs`
   and run past `endUs`.
 - Filters carry state across consecutive windows, so a trace read window by window
