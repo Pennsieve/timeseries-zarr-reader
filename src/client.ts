@@ -24,9 +24,12 @@ import {
   createDedupingStore,
   createThrottlingStore,
 } from "./stores/cache.js";
+import { queryEventChannel } from "./events.js";
 import type {
   ChannelInfo,
   EventBatch,
+  EventChannelInfo,
+  EventWindow,
   FilterSpec,
   MontagePair,
   ReadPriority,
@@ -129,6 +132,18 @@ export interface UnitQueryOptions {
   readonly endUs: number;
   /** Time one pixel column covers. Gates whether waveforms are fetched. */
   readonly pixelWidthUs: number;
+  /**
+   * How early this query's reads are admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  readonly signal?: AbortSignal;
+}
+
+/** Options for one event-channel query. Times are microseconds, `endUs` exclusive. */
+export interface EventQueryOptions {
+  readonly channel: string;
+  readonly startUs: number;
+  readonly endUs: number;
   /**
    * How early this query's reads are admitted. Defaults to `"viewport"`.
    */
@@ -373,6 +388,42 @@ export class StreamingClient {
         queryUnitChannel(store, id, unit, params, opts),
       );
     }
+  }
+
+  /**
+   * Returns info for every event channel in the bundle: annotations and other
+   * timestamped marks. They are not in {@link channelInfo}, which lists only channels
+   * with samples. Returned objects are copies.
+   */
+  async eventChannels(): Promise<EventChannelInfo[]> {
+    const { catalog } = await this.#loadBundle();
+    return catalog.eventChannels.map((entry) => ({ ...entry.info }));
+  }
+
+  /**
+   * Reads one event channel's events that overlap a window, in time order.
+   *
+   * An interval that starts before the window and runs into it is included. Throws for
+   * an unknown event channel id or an `endUs` before `startUs`.
+   */
+  async queryEvents(params: EventQueryOptions): Promise<EventWindow> {
+    params.signal?.throwIfAborted();
+    requireWindow(params.startUs, params.endUs);
+    const { catalog, store } = await this.#loadBundle();
+    const entry = catalog.eventsById.get(params.channel);
+    if (entry === undefined) {
+      throw new Error(`no event channel with id ${params.channel}`);
+    }
+
+    return this.#limit(params.priority ?? "viewport", () =>
+      queryEventChannel(
+        store,
+        entry,
+        catalog.idByIndex,
+        params,
+        toStoreOptions(params.signal),
+      ),
+    );
   }
 
   /**

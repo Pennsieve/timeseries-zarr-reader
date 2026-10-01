@@ -1,4 +1,4 @@
-import type { ChannelInfo, Store } from "./types.js";
+import type { ChannelInfo, EventChannelInfo, Store } from "./types.js";
 
 /** Level-0 bin period and sample count, used to derive a continuous channel's end time. */
 export interface Level0Geometry {
@@ -10,7 +10,7 @@ export interface Level0Geometry {
  * Maps a channel group's stored attributes to `ChannelInfo`.
  *
  * The bundle's snake_case attribute names become camelCase here: `rate_hz` -> `rateHz`,
- * `start_us` -> `startUs`. Unrecognized attributes are ignored.
+ * `offset_us` (or the older `start_us`) -> `startUs`. Unrecognized attributes are ignored.
  *
  * For a continuous channel, `endUs` is the exclusive end derived from `level0`: one period
  * past the last sample. For a unit channel, `endUs` equals `startUs`. Only the `events`
@@ -59,7 +59,8 @@ export function toChannelInfo(
     );
   }
 
-  const startUs = requireNumber("start_us");
+  // Current bundles name the first sample's time offset_us; older ones start_us.
+  const startUs = requireNumber("offset_us" in raw ? "offset_us" : "start_us");
   let endUs = startUs;
   if (kind === "continuous") {
     if (level0 === undefined) {
@@ -192,14 +193,28 @@ export interface ChannelEntry {
   readonly unit?: UnitArrays;
 }
 
+/** One event channel of a bundle: its store path, info, and which arrays it carries. */
+export interface EventChannelEntry {
+  /** Absolute store path of the channel group. */
+  readonly path: `/${string}`;
+  readonly info: EventChannelInfo;
+  /** Names of the channel's own arrays: events, durations, labels, bodies, ... */
+  readonly arrays: ReadonlySet<string>;
+}
+
 /**
- * A bundle's channels plus an id index.
+ * A bundle's channels plus id indexes.
  *
- * `byId` holds the same entry objects as `channels`, keyed by channel id.
+ * `byId` holds the same entry objects as `channels`, keyed by channel id, and `eventsById`
+ * the same for `eventChannels`. `idByIndex` maps a channel group's numbered path to its id,
+ * which is how an event's `channel_refs` name the channels it applies to.
  */
 export interface BundleCatalog {
   readonly channels: ChannelEntry[];
   readonly byId: Map<string, ChannelEntry>;
+  readonly eventChannels: EventChannelEntry[];
+  readonly eventsById: Map<string, EventChannelEntry>;
+  readonly idByIndex: Map<number, string>;
 }
 
 /** Narrows parsed JSON to an object. Returns undefined for non-objects, including null. */
@@ -238,6 +253,35 @@ function readLevel(
   }
 
   return { path, periodUs, binCount, isMinMax: dims.length === 2 };
+}
+
+/**
+ * Reads a current-layout `raw` array as the finest level.
+ *
+ * `raw` carries no period of its own, so it comes from the channel's `rate_hz`. Throws
+ * when the array is not rank 1 or the rate is not a positive number.
+ */
+function readRawArray(
+  path: `/${string}`,
+  node: Record<string, unknown>,
+  channelAttrs: unknown,
+): LevelInfo {
+  const dims = asDims(node.shape);
+  const binCount = dims?.[0];
+  if (dims?.length !== 1 || typeof binCount !== "number") {
+    throw new Error(
+      `${path} has unsupported shape ${JSON.stringify(node.shape)} (expected [n])`,
+    );
+  }
+
+  const rateHz: unknown = asObject(channelAttrs)?.rate_hz;
+  if (typeof rateHz !== "number" || !(rateHz > 0)) {
+    throw new Error(
+      `${path} needs a positive channel rate_hz (got ${JSON.stringify(rateHz)})`,
+    );
+  }
+
+  return { path, periodUs: 1e6 / rateHz, binCount, isMinMax: false };
 }
 
 /** Reads a unit channel's events and waveforms metadata. Throws when either is missing or malformed. */
@@ -296,10 +340,12 @@ function readUnitArrays(
  * The bundle is read in one request to `/zarr.json`, whose `consolidated_metadata`
  * inlines every descendant's metadata. The store tree is never walked.
  *
- * Levels are returned finest first. A level's layout comes from its rank: rank 1 is raw,
- * rank 2 with a trailing dimension of 2 is a min/max envelope. A unit channel's `events`
- * and `waveforms` arrays are read into {@link UnitArrays}. Its `units` array and other
- * unrecognized nodes are ignored.
+ * Levels are returned finest first. In the current layout a channel's `raw` array is the
+ * finest level and each numbered group's `env` member is a min/max level. In the older
+ * layout a level's rank decides: rank 1 is raw, rank 2 with a trailing dimension of 2 is
+ * a min/max envelope. A unit channel's `events` and `waveforms` arrays are read into
+ * {@link UnitArrays}. Channels of kind `event` are listed in `eventChannels`, not
+ * `channels`. Other unrecognized nodes are ignored.
  *
  * Throws for a missing `/zarr.json`, invalid JSON, a root that is not a Zarr v3 group,
  * missing `consolidated_metadata`, a malformed level, malformed channel attributes, a
@@ -339,13 +385,25 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
     throw new Error("/zarr.json has no consolidated_metadata");
   }
 
-  // Consolidated paths are flat and relative: "0" is a channel group, "0/1" a level array.
+  // Consolidated paths are flat and relative. Two channel layouts are read:
+  //   current (bundle-format.md): "0/raw" samples, "0/1" a level group carrying
+  //     period_us, "0/1/env" its min/max pairs.
+  //   older: every level a numbered array directly under the channel, "0/0", "0/1".
   const groups = new Map<string, Record<string, unknown>>();
   const levelsByChannel = new Map<string, LevelInfo[]>();
   const namedByChannel = new Map<
     string,
     Map<string, Record<string, unknown>>
   >();
+  const rawByChannel = new Map<string, Record<string, unknown>>();
+  const levelGroups = new Map<string, Record<string, unknown>>();
+  const envByLevel = new Map<string, Record<string, unknown>>();
+
+  const addLevel = (channelPath: string, level: LevelInfo) => {
+    const levels = levelsByChannel.get(channelPath) ?? [];
+    levels.push(level);
+    levelsByChannel.set(channelPath, levels);
+  };
 
   for (const [nodePath, value] of Object.entries(nodes)) {
     const node = asObject(value);
@@ -353,37 +411,107 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       continue;
     }
 
-    const slash = nodePath.indexOf("/");
-    if (slash === -1) {
+    const parts = nodePath.split("/");
+    const [channelPath, leaf, member] = parts;
+    if (parts.length === 1) {
       if (node.node_type === "group") {
         groups.set(nodePath, node);
       }
       continue;
     }
+    if (channelPath === undefined || leaf === undefined) {
+      continue;
+    }
 
-    // A numbered array directly under a channel is a pyramid level, and a named one is
-    // unit-channel data. Deeper nodes are ignored.
-    const channelPath = nodePath.slice(0, slash);
-    const leaf = nodePath.slice(slash + 1);
-    if (node.node_type !== "array" || leaf.includes("/")) {
+    // A level group's env member. Other members (mean, valid, counts) are not read.
+    if (parts.length === 3) {
+      if (
+        /^\d+$/.test(leaf) &&
+        member === "env" &&
+        node.node_type === "array"
+      ) {
+        envByLevel.set(`${channelPath}/${leaf}`, node);
+      }
+      continue;
+    }
+    if (parts.length > 3) {
       continue;
     }
 
     if (/^\d+$/.test(leaf)) {
-      const levels = levelsByChannel.get(channelPath) ?? [];
-      levels.push(readLevel(`/${nodePath}`, node));
-      levelsByChannel.set(channelPath, levels);
-    } else {
-      const named = namedByChannel.get(channelPath) ?? new Map();
-      named.set(leaf, node);
-      namedByChannel.set(channelPath, named);
+      if (node.node_type === "group") {
+        levelGroups.set(nodePath, node);
+      } else if (node.node_type === "array") {
+        addLevel(channelPath, readLevel(`/${nodePath}`, node));
+      }
+    } else if (node.node_type === "array") {
+      if (leaf === "raw") {
+        rawByChannel.set(channelPath, node);
+      } else {
+        const named = namedByChannel.get(channelPath) ?? new Map();
+        named.set(leaf, node);
+        namedByChannel.set(channelPath, named);
+      }
     }
+  }
+
+  // The period lives on the level group, not on its env array. A group with no env
+  // (an event channel's counts) has nothing to draw and is skipped.
+  for (const [levelPath, group] of levelGroups) {
+    const env = envByLevel.get(levelPath);
+    if (env === undefined) {
+      continue;
+    }
+    const level = readLevel(`/${levelPath}/env`, {
+      ...env,
+      attributes: group.attributes,
+    });
+    if (!level.isMinMax) {
+      throw new Error(`level ${level.path} must have shape [n, 2]`);
+    }
+    addLevel(levelPath.slice(0, levelPath.indexOf("/")), level);
   }
 
   const channels: ChannelEntry[] = [];
   const byId = new Map<string, ChannelEntry>();
+  const eventChannels: EventChannelEntry[] = [];
+  const eventsById = new Map<string, EventChannelEntry>();
+  const idByIndex = new Map<number, string>();
+
+  // One id space across both kinds, so an event's channel_refs resolve either way.
+  const claim = (id: string, path: string) => {
+    const claimed = byId.get(id)?.path ?? eventsById.get(id)?.path;
+    if (claimed !== undefined) {
+      throw new Error(`duplicate channel id ${id}: ${claimed} and ${path}`);
+    }
+    if (/^\d+$/.test(path.slice(1))) {
+      idByIndex.set(Number(path.slice(1)), id);
+    }
+  };
 
   for (const [channelPath, node] of groups) {
+    // Event channels are listed apart from signal channels: callers that draw
+    // traces enumerate `channels` and must not meet a channel with no samples.
+    if (asObject(node.attributes)?.kind === "event") {
+      const entry = readEventChannel(
+        channelPath,
+        node.attributes,
+        namedByChannel.get(channelPath) ?? new Map(),
+      );
+      claim(entry.info.id, entry.path);
+      eventChannels.push(entry);
+      eventsById.set(entry.info.id, entry);
+      continue;
+    }
+
+    const rawNode = rawByChannel.get(channelPath);
+    if (rawNode !== undefined) {
+      addLevel(
+        channelPath,
+        readRawArray(`/${channelPath}/raw`, rawNode, node.attributes),
+      );
+    }
+
     const levels = (levelsByChannel.get(channelPath) ?? []).sort(
       (a, b) => a.periodUs - b.periodUs,
     );
@@ -408,16 +536,56 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
         : undefined;
     const entry: ChannelEntry = { path: `/${channelPath}`, info, levels, unit };
 
-    const claimed = byId.get(info.id);
-    if (claimed !== undefined) {
-      throw new Error(
-        `duplicate channel id ${info.id}: ${claimed.path} and ${entry.path}`,
-      );
-    }
-
+    claim(info.id, entry.path);
     channels.push(entry);
     byId.set(info.id, entry);
   }
 
-  return { channels, byId };
+  return { channels, byId, eventChannels, eventsById, idByIndex };
+}
+
+/**
+ * Reads an event channel's attributes and array names.
+ *
+ * Only `id`, `name`, and a rank-1 `events` array are required. Throws when any of them
+ * is missing or malformed.
+ */
+function readEventChannel(
+  channelPath: string,
+  attrs: unknown,
+  named: ReadonlyMap<string, Record<string, unknown>>,
+): EventChannelEntry {
+  const raw = asObject(attrs) ?? {};
+  const path = `/${channelPath}` as const;
+  const id = raw.id;
+  const name = raw.name;
+  if (typeof id !== "string" || typeof name !== "string") {
+    throw new TypeError(`event channel ${path} must have string id and name`);
+  }
+
+  const eventDims = asDims(named.get("events")?.shape);
+  const count = eventDims?.[0];
+  if (eventDims?.length !== 1 || typeof count !== "number") {
+    throw new Error(
+      `event channel ${path} must have an events array of shape [n]`,
+    );
+  }
+
+  const labelNames = Array.isArray(raw.label_names)
+    ? raw.label_names.map(String)
+    : [];
+  const bodyMediaType =
+    typeof raw.body_media_type === "string"
+      ? raw.body_media_type
+      : "text/plain";
+  const maxDurationUs =
+    typeof raw.max_duration_us === "number" && raw.max_duration_us > 0
+      ? raw.max_duration_us
+      : 0;
+
+  return {
+    path,
+    info: { id, name, count, labelNames, bodyMediaType, maxDurationUs },
+    arrays: new Set(named.keys()),
+  };
 }

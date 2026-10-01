@@ -118,6 +118,52 @@ export interface EventBatch {
  */
 export type ReadPriority = "viewport" | "prefetch" | "background";
 
+/**
+ * Metadata for one event channel: annotations, detector output, or any other
+ * timestamped marks stored as `kind: "event"`.
+ */
+export interface EventChannelInfo {
+  /** Stable channel id used to address the channel in queries. */
+  readonly id: string;
+  /** Human-readable channel label. */
+  readonly name: string;
+  /** Number of events in the channel. */
+  readonly count: number;
+  /** Names for label categories, index-aligned. Empty when the bundle names none. */
+  readonly labelNames: readonly string[];
+  /** IANA media type of each event's body, e.g. "text/plain" or "application/json". */
+  readonly bodyMediaType: string;
+  /** Upper bound on any event's duration. 0 when every event is a point. */
+  readonly maxDurationUs: number;
+}
+
+/** One event read from an event channel. Times are microseconds from recording onset. */
+export interface EventRecord {
+  /** Position in the channel's arrays. Stable within one bundle, not across rewrites. */
+  readonly index: number;
+  readonly timeUs: number;
+  /** 0 for a point event. */
+  readonly durationUs: number;
+  /** The label's name, or its number when the bundle names none. Undefined when unlabeled. */
+  readonly label: string | undefined;
+  /** The body decoded as UTF-8, trailing newline removed. Undefined when there are no bodies. */
+  readonly body: string | undefined;
+  /** Ids of the channels the event applies to. Empty means the whole recording. */
+  readonly channels: readonly string[];
+}
+
+/** An event channel's events that overlap a query window. */
+export interface EventWindow {
+  /** Channel id the events belong to. */
+  readonly channel: string;
+  /** Query-window start. */
+  readonly startUs: number;
+  /** Query-window end, exclusive. */
+  readonly endUs: number;
+  /** Events in ascending time order. */
+  readonly events: readonly EventRecord[];
+}
+
 /** Bytes to read from a key: a window, or the last `suffixLength` bytes. */
 export type ByteRange =
   | { readonly offset: number; readonly length: number }
