@@ -139,6 +139,67 @@ export async function openTimestamps(
 }
 
 /**
+ * Reads a rank-1 integer array over a half-open index range, as numbers.
+ *
+ * Any integer width is accepted. 64-bit values convert exactly while they fit a safe
+ * integer, and a value outside that range throws a RangeError. An empty range returns
+ * an empty array without opening the array.
+ *
+ * Throws when no array exists at `path` or it is not a rank-1 integer array.
+ */
+export async function readIntegers(
+  store: Store,
+  path: `/${string}`,
+  range: { start: number; end: number },
+  opts?: StoreOptions,
+): Promise<number[]> {
+  if (range.end <= range.start) {
+    return [];
+  }
+  const array = await openArray(store, path, opts);
+  if (array.shape.length !== 1 || !/^u?int\d+$/.test(array.dtype)) {
+    throw new Error(
+      `${path} must be a rank-1 integer array (got ${array.dtype} ${JSON.stringify(array.shape)})`,
+    );
+  }
+
+  const region = await get(array, [slice(range.start, range.end)], opts);
+  return Array.from(region.data as ArrayLike<number | bigint>, (value) => {
+    if (typeof value === "bigint") {
+      if (value > MAX_SAFE_TIMESTAMP || value < -MAX_SAFE_TIMESTAMP) {
+        throw new RangeError(`${value} in ${path} does not fit a safe integer`);
+      }
+      return Number(value);
+    }
+    return value;
+  });
+}
+
+/**
+ * Reads a rank-1 uint8 array over a half-open byte range.
+ *
+ * Throws when no array exists at `path` or it is not rank-1 uint8.
+ */
+export async function readBytes(
+  store: Store,
+  path: `/${string}`,
+  range: { start: number; end: number },
+  opts?: StoreOptions,
+): Promise<Uint8Array> {
+  if (range.end <= range.start) {
+    return new Uint8Array(0);
+  }
+  const array = await openArray(store, path, opts);
+  if (array.shape.length !== 1 || !array.is("uint8")) {
+    throw new Error(
+      `${path} must be rank-1 uint8 (got ${array.dtype} ${JSON.stringify(array.shape)})`,
+    );
+  }
+  const region = await get(array, [slice(range.start, range.end)], opts);
+  return region.data;
+}
+
+/**
  * Reads whole rows of a rank-2 array over a half-open row range.
  *
  * Rows are returned flattened row-major, `rowLength` values per row, widened to

@@ -33,4 +33,12 @@ jobs:
             exit 1
           fi
       # prepublishOnly runs the full gate (lint, format, typecheck, tests, build).
-      - run: npm publish --provenance
+      # A prerelease (0.7.0-alpha.0) goes under the "alpha" dist-tag. Without a tag
+      # npm publishes to "latest", which every plain install follows.
+      - name: Publish
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) npm publish --provenance --tag alpha ;;
+            *) npm publish --provenance ;;
+          esac
