@@ -210,4 +210,79 @@ describe("event channels", () => {
       client.queryEvents({ channel: "ch-1", startUs: 0, endUs: 1 }),
     ).rejects.toThrow(/no event channel/);
   });
+
+  test("leaves bodies out when asked", async () => {
+    const client = new StreamingClient({ store: eventStore() });
+    const window = await client.queryEvents({
+      channel: "marks",
+      startUs: 0,
+      endUs: 10_000,
+      bodies: false,
+    });
+    expect(window.events.map((e) => e.timeUs)).toEqual([1000, 5000, 9000]);
+    expect(window.events.map((e) => e.body)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(window.events[1]!.label).toBe("seizure");
+  });
+
+  test("a limit ends the window where the first event left out starts", async () => {
+    const client = new StreamingClient({ store: eventStore() });
+    const first = await client.queryEvents({
+      channel: "marks",
+      startUs: 0,
+      endUs: 10_000,
+      limit: 1,
+    });
+    expect(first.events.map((e) => e.timeUs)).toEqual([1000]);
+    expect(first.endUs).toBe(5000);
+
+    // Reading on from there picks up exactly where the first read stopped.
+    const next = await client.queryEvents({
+      channel: "marks",
+      startUs: first.endUs,
+      endUs: 10_000,
+      limit: 1,
+    });
+    expect(next.events.map((e) => e.timeUs)).toEqual([5000]);
+    expect(next.endUs).toBe(9000);
+  });
+
+  test("a limit counts only events starting inside the window", async () => {
+    const client = new StreamingClient({ store: eventStore() });
+    // The seizure started at 5000 and is still running at 6000; it comes back on top
+    // of the one event the limit allows.
+    const window = await client.queryEvents({
+      channel: "marks",
+      startUs: 6000,
+      endUs: 10_000,
+      limit: 1,
+    });
+    expect(window.events.map((e) => e.timeUs)).toEqual([5000, 9000]);
+    expect(window.endUs).toBe(10_000);
+  });
+
+  test("rejects a limit that is not a positive integer", async () => {
+    const client = new StreamingClient({ store: eventStore() });
+    await expect(
+      client.queryEvents({ channel: "marks", startUs: 0, endUs: 1, limit: 0 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  test("reads one event's body on its own", async () => {
+    const client = new StreamingClient({ store: eventStore() });
+    expect(await client.eventBody({ channel: "marks", index: 1 })).toBe("bb");
+    await expect(
+      client.eventBody({ channel: "marks", index: 3 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  test("a channel without bodies has no body to read", async () => {
+    const client = new StreamingClient({ store: eventStore({ bare: true }) });
+    expect(await client.eventBody({ channel: "marks", index: 0 })).toBe(
+      undefined,
+    );
+  });
 });

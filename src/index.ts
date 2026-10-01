@@ -21,6 +21,7 @@ export { FetchStore, openBundle } from "./stores/open-bundle.js";
 export { RawReadTooLargeError, StreamingClient } from "./client.js";
 export type {
   DataSpanOptions,
+  EventBodyOptions,
   EventQueryOptions,
   QueryOptions,
   StreamingClientOptions,

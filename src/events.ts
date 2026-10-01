@@ -3,6 +3,14 @@ import type { EventRecord, EventWindow, Store, StoreOptions } from "./types.js";
 import { firstIndexAtOrAfter } from "./unit.js";
 import { openTimestamps, readBytes, readIntegers } from "./zarr.js";
 
+/** What a query reads beyond the window itself. */
+export interface EventReadOptions {
+  /** Read each event's body. A viewer drawing marks needs none of them. */
+  readonly bodies: boolean;
+  /** At most this many events starting inside the window. */
+  readonly limit?: number;
+}
+
 /**
  * Reads one event channel's events that overlap a time window.
  *
@@ -10,6 +18,10 @@ import { openTimestamps, readBytes, readIntegers } from "./zarr.js";
  * interval `[time, time + duration)` when it intersects the window at all. The search
  * starts `maxDurationUs` before the window, so an interval that began earlier and is
  * still running is found.
+ *
+ * A limit stops the read early. The returned window's `endUs` then moves back to the
+ * start of the first event left out, so the events returned are every event in the
+ * window they name, and the next read can start there.
  *
  * Every per-event array is optional except `events`: a channel without `durations` has
  * only points, without `labels` has no labels, and so on. `idByIndex` turns the numbered
@@ -20,23 +32,37 @@ export async function queryEventChannel(
   entry: EventChannelEntry,
   idByIndex: ReadonlyMap<number, string>,
   window: { startUs: number; endUs: number },
+  read: EventReadOptions,
   opts?: StoreOptions,
 ): Promise<EventWindow> {
   const { id, labelNames, maxDurationUs } = entry.info;
-  const empty = { channel: id, ...window, events: [] };
 
   // 1. Find the candidates by binary search over the sorted start times.
   const times = await openTimestamps(store, `${entry.path}/events`, opts);
-  const [start, end] = await Promise.all([
+  const [start, inWindow, windowEnd] = await Promise.all([
     firstIndexAtOrAfter(times, window.startUs - maxDurationUs),
+    maxDurationUs > 0
+      ? firstIndexAtOrAfter(times, window.startUs)
+      : Promise.resolve(-1),
     firstIndexAtOrAfter(times, window.endUs),
   ]);
+
+  // 2. Apply the limit to events starting inside the window, not to the earlier ones
+  // the search widened back to. The window ends where the first event left out starts.
+  let end = windowEnd;
+  let endUs = window.endUs;
+  const firstInWindow = inWindow < 0 ? start : inWindow;
+  if (read.limit !== undefined && end - firstInWindow > read.limit) {
+    end = firstInWindow + read.limit;
+    endUs = (await times.read(end, end + 1))[0]!;
+  }
+  const empty = { channel: id, startUs: window.startUs, endUs, events: [] };
   if (end <= start) {
     return empty;
   }
   const range = { start, end };
 
-  // 2. Read every per-event column the channel has over the candidate range.
+  // 3. Read every per-event column the channel has over the candidate range.
   const has = (name: string) => entry.arrays.has(name);
   const [starts, durations, labels, bodies, refs] = await Promise.all([
     times.read(start, end),
@@ -46,7 +72,7 @@ export async function queryEventChannel(
     has("labels")
       ? readIntegers(store, `${entry.path}/labels`, range, opts)
       : undefined,
-    has("bodies") && has("body_offsets")
+    read.bodies && has("bodies") && has("body_offsets")
       ? readBodies(store, entry.path, range, opts)
       : undefined,
     has("channel_refs") && has("channel_ref_offsets")
@@ -54,7 +80,8 @@ export async function queryEventChannel(
       : undefined,
   ]);
 
-  // 3. Keep the candidates that overlap the window. The search widened it backwards.
+  // 4. Keep the candidates that overlap the window. The search widened it backwards,
+  // and a limit can land among events sharing a start time: those belong to the next read.
   const events: EventRecord[] = [];
   for (let i = 0; i < starts.length; i++) {
     const timeUs = starts[i]!;
@@ -63,7 +90,7 @@ export async function queryEventChannel(
       durationUs > 0
         ? timeUs + durationUs > window.startUs
         : timeUs >= window.startUs;
-    if (!overlaps) {
+    if (!overlaps || timeUs >= endUs) {
       continue;
     }
     const label = labels?.[i];
@@ -79,6 +106,29 @@ export async function queryEventChannel(
   }
 
   return { ...empty, events };
+}
+
+/**
+ * Reads one event's body, or undefined when the channel stores none.
+ *
+ * For a caller that drew marks without bodies and now needs the text of one.
+ */
+export async function readEventBody(
+  store: Store,
+  entry: EventChannelEntry,
+  index: number,
+  opts?: StoreOptions,
+): Promise<string | undefined> {
+  if (!entry.arrays.has("bodies") || !entry.arrays.has("body_offsets")) {
+    return undefined;
+  }
+  const [body] = await readBodies(
+    store,
+    entry.path,
+    { start: index, end: index + 1 },
+    opts,
+  );
+  return body;
 }
 
 /**

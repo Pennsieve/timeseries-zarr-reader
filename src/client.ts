@@ -24,7 +24,7 @@ import {
   createDedupingStore,
   createThrottlingStore,
 } from "./stores/cache.js";
-import { queryEventChannel } from "./events.js";
+import { queryEventChannel, readEventBody } from "./events.js";
 import type {
   ChannelInfo,
   EventBatch,
@@ -145,7 +145,29 @@ export interface EventQueryOptions {
   readonly startUs: number;
   readonly endUs: number;
   /**
+   * Read each event's body. Defaults to true. Bodies are usually most of a channel's
+   * bytes and drawing needs none of them; fetch one later with `eventBody`.
+   */
+  readonly bodies?: boolean;
+  /**
+   * At most this many events starting inside the window. When it cuts the window short,
+   * the result's `endUs` is the start of the first event left out.
+   */
+  readonly limit?: number;
+  /**
    * How early this query's reads are admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  readonly signal?: AbortSignal;
+}
+
+/** Options for reading one event's body. */
+export interface EventBodyOptions {
+  readonly channel: string;
+  /** The event's `index`, as a query returned it. */
+  readonly index: number;
+  /**
+   * How early this read is admitted. Defaults to `"viewport"`.
    */
   readonly priority?: ReadPriority;
   readonly signal?: AbortSignal;
@@ -404,16 +426,22 @@ export class StreamingClient {
    * Reads one event channel's events that overlap a window, in time order.
    *
    * An interval that starts before the window and runs into it is included. Throws for
-   * an unknown event channel id or an `endUs` before `startUs`.
+   * an unknown event channel id, an `endUs` before `startUs`, or a limit that is not a
+   * positive integer.
    */
   async queryEvents(params: EventQueryOptions): Promise<EventWindow> {
     params.signal?.throwIfAborted();
     requireWindow(params.startUs, params.endUs);
-    const { catalog, store } = await this.#loadBundle();
-    const entry = catalog.eventsById.get(params.channel);
-    if (entry === undefined) {
-      throw new Error(`no event channel with id ${params.channel}`);
+    if (
+      params.limit !== undefined &&
+      !(Number.isInteger(params.limit) && params.limit > 0)
+    ) {
+      throw new RangeError(
+        `limit must be a positive integer, got ${params.limit}`,
+      );
     }
+    const entry = await this.#eventChannel(params.channel);
+    const { catalog, store } = await this.#loadBundle();
 
     return this.#limit(params.priority ?? "viewport", () =>
       queryEventChannel(
@@ -421,9 +449,43 @@ export class StreamingClient {
         entry,
         catalog.idByIndex,
         params,
+        { bodies: params.bodies ?? true, limit: params.limit },
         toStoreOptions(params.signal),
       ),
     );
+  }
+
+  /**
+   * Reads one event's body, or undefined when the channel stores none.
+   *
+   * Throws for an unknown event channel id or an index outside the channel.
+   */
+  async eventBody(params: EventBodyOptions): Promise<string | undefined> {
+    params.signal?.throwIfAborted();
+    const entry = await this.#eventChannel(params.channel);
+    if (
+      !Number.isInteger(params.index) ||
+      params.index < 0 ||
+      params.index >= entry.info.count
+    ) {
+      throw new RangeError(
+        `event ${params.index} is outside channel ${params.channel} (${entry.info.count} events)`,
+      );
+    }
+    const { store } = await this.#loadBundle();
+
+    return this.#limit(params.priority ?? "viewport", () =>
+      readEventBody(store, entry, params.index, toStoreOptions(params.signal)),
+    );
+  }
+
+  async #eventChannel(id: string) {
+    const { catalog } = await this.#loadBundle();
+    const entry = catalog.eventsById.get(id);
+    if (entry === undefined) {
+      throw new Error(`no event channel with id ${id}`);
+    }
+    return entry;
   }
 
   /**
