@@ -1,8 +1,9 @@
 import type {
   BundleCatalog,
   ChannelEntry,
+  ContinuousEntry,
+  EventEntry,
   LevelInfo,
-  UnitArrays,
 } from "./catalog.js";
 import { binRange, readCatalog, selectLevel } from "./catalog.js";
 import {
@@ -11,11 +12,13 @@ import {
   MAX_RAW_BYTES,
   RESAMPLE_PIXEL_RATIO,
 } from "./constants.js";
+import { queryEventChannel } from "./events.js";
 import type { PriorityLimit } from "./fetch.js";
 import { createPriorityLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
 import { assertFilterSpec, createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
+import { readRecording } from "./recording.js";
 import { resampleToPixels } from "./resample.js";
 import {
   createCachingStore,
@@ -26,16 +29,19 @@ import {
 } from "./stores/cache.js";
 import type {
   ChannelInfo,
-  EventBatch,
+  EventColumn,
+  EventCounts,
+  EventWindow,
   FilterSpec,
   MontagePair,
   ReadPriority,
+  RecordingInfo,
   Segment,
   Store,
   StoreOptions,
+  Waveforms,
 } from "./types.js";
-import { queryUnitChannel } from "./unit.js";
-import { readBins, warmZstdCodec } from "./zarr.js";
+import { readBins, readColumn, readRows, warmZstdCodec } from "./zarr.js";
 
 /** Bytes per raw sample on disk. */
 const BYTES_PER_RAW_SAMPLE = 4;
@@ -89,7 +95,7 @@ export interface StreamingClientOptions {
   readonly maxConcurrentRequests?: number;
 }
 
-/** Options for one continuous query. Times are UTC microseconds, `endUs` exclusive. */
+/** Options for one continuous query. Times are bundle microseconds, `endUs` exclusive. */
 export interface QueryOptions {
   /**
    * Channel ids to read. Exactly one of `channels` and `montage` carries the query's
@@ -122,15 +128,46 @@ export interface QueryOptions {
   readonly signal?: AbortSignal;
 }
 
-/** Options for one unit-channel query. Times are UTC microseconds, `endUs` exclusive. */
-export interface UnitQueryOptions {
+/** Options for one event query. Times are bundle microseconds, `endUs` exclusive. */
+export interface EventQueryOptions {
+  /** Event channel ids to read, one window each. */
   readonly channels: readonly string[];
   readonly startUs: number;
   readonly endUs: number;
-  /** Time one pixel column covers. Gates whether waveforms are fetched. */
-  readonly pixelWidthUs: number;
+  /**
+   * Time one pixel column covers. Gates the waveform read: snippets are fetched only
+   * when one spans more than `MIN_WAVEFORM_PIXELS` pixels. Omit it to fetch them
+   * whenever the channel stores them.
+   */
+  readonly pixelWidthUs?: number;
+  /** The per-event columns to read. Defaults to every column the channel stores. */
+  readonly columns?: readonly EventColumn[];
   /**
    * How early this query's reads are admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  readonly signal?: AbortSignal;
+}
+
+/** Options for one count-level read over an event channel. */
+export interface EventCountOptions {
+  readonly channel: string;
+  readonly startUs: number;
+  readonly endUs: number;
+  /** Time one pixel column covers. Picks the count level. */
+  readonly pixelWidthUs: number;
+  /**
+   * How early this read is admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  readonly signal?: AbortSignal;
+}
+
+/** Options for reading an event channel's mean waveforms. */
+export interface WaveformMeanOptions {
+  readonly channel: string;
+  /**
+   * How early this read is admitted. Defaults to `"viewport"`.
    */
   readonly priority?: ReadPriority;
   readonly signal?: AbortSignal;
@@ -159,7 +196,7 @@ interface PlannedRead {
   readonly level: LevelInfo;
   /** Bin index range within the level, clamped to the bins it has. */
   readonly range: { start: number; end: number };
-  /** Absolute time of the first bin in `range`. */
+  /** Bundle time of the first bin in `range`. */
   readonly startUs: number;
 }
 
@@ -189,10 +226,15 @@ interface Bundle {
    * root's consolidated metadata, and responses are cached.
    */
   readonly store: Store;
+  /** The cached store beneath it, for files that are not Zarr nodes. */
+  readonly files: Store;
 }
 
 /**
  * Reads one bundle by channel id and time window.
+ *
+ * Every time in and out of the client is microseconds from the bundle's origin.
+ * {@link recording} gives the origin's wall-clock time when the bundle records one.
  *
  * The constructor reads nothing from the store. It starts loading the codec that
  * decompresses chunks. The catalog is read on first use and cached for the client's
@@ -216,6 +258,7 @@ export class StreamingClient {
   readonly #limit: PriorityLimit;
   readonly #filters: FilterSession;
   #bundle: Promise<Bundle> | undefined;
+  #recording: Promise<RecordingInfo | undefined> | undefined;
 
   constructor(options: StreamingClientOptions) {
     this.#store = options.store;
@@ -228,10 +271,29 @@ export class StreamingClient {
     void warmZstdCodec();
   }
 
-  /** Returns per-channel info for every channel in the bundle. Returned objects are copies. */
+  /**
+   * Returns info for every channel in the bundle, continuous and event alike, in the
+   * bundle's order. Narrow on `kind`. Returned objects are copies.
+   */
   async channelInfo(): Promise<ChannelInfo[]> {
     const { catalog } = await this.#loadBundle();
     return catalog.channels.map((entry) => ({ ...entry.info }));
+  }
+
+  /**
+   * Returns the bundle's `recording.json`, or undefined when it has none.
+   *
+   * Read once and cached for the client's lifetime. A viewer adds `startUs` to a
+   * bundle time to label an axis with wall-clock time. Rejects when the file does
+   * not parse; the next call retries.
+   */
+  recording(): Promise<RecordingInfo | undefined> {
+    return (this.#recording ??= this.#loadBundle()
+      .then(({ files }) => readRecording(files))
+      .catch((error: unknown) => {
+        this.#recording = undefined;
+        throw error;
+      }));
   }
 
   /**
@@ -251,10 +313,11 @@ export class StreamingClient {
    * overlap yields empty data, with `startUs` clamped to the channel's extent.
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
-   * unknown channel id, a unit channel, a montage pair whose rates or sample grids differ,
-   * a filter spec outside a trace's Nyquist range, a non-positive `pixelWidthUs`, or an
-   * `endUs` before `startUs`. Every rejection of the request itself happens before any
-   * read starts. Calling `query` does not throw; rejections arrive on the first iteration.
+   * unknown channel id, an event channel, a montage pair whose rates or sample grids
+   * differ, a filter spec outside a trace's Nyquist range, a non-positive `pixelWidthUs`,
+   * or an `endUs` before `startUs`. Every rejection of the request itself happens before
+   * any read starts. Calling `query` does not throw; rejections arrive on the first
+   * iteration.
    *
    * A read that fails rejects the iteration and cancels the reads of the traces not yet
    * yielded, as does a consumer that stops iterating early.
@@ -351,38 +414,135 @@ export class StreamingClient {
   }
 
   /**
-   * Reads unit channels over a window, yielding one event batch per channel in request
+   * Reads event channels over a window, yielding one window per channel in request
    * order.
    *
-   * Channels are read sequentially. Throws for an unknown channel id, a continuous
-   * channel, or a non-positive `pixelWidthUs`.
+   * An event is in the window when it starts before `endUs` and ends at or after
+   * `startUs`, so an interval that opened before the window and is still running is
+   * included. Every column the channel stores is read unless `columns` narrows the
+   * list; `text` can be most of a channel's bytes. Waveforms are read only when
+   * `pixelWidthUs` is omitted or one snippet spans more than `MIN_WAVEFORM_PIXELS`
+   * pixels.
+   *
+   * Channels are read sequentially. Rejects for an unknown channel id, a continuous
+   * channel, a non-positive `pixelWidthUs`, or an `endUs` before `startUs`.
    */
-  async *queryUnits(
-    params: UnitQueryOptions,
-  ): AsyncGenerator<EventBatch, void, undefined> {
+  async *queryEvents(
+    params: EventQueryOptions,
+  ): AsyncGenerator<EventWindow, void, undefined> {
     params.signal?.throwIfAborted();
-    requirePixelWidth(params.pixelWidthUs);
+    if (params.pixelWidthUs !== undefined) {
+      requirePixelWidth(params.pixelWidthUs);
+    }
     requireWindow(params.startUs, params.endUs);
     const { catalog, store } = await this.#loadBundle();
     const opts = toStoreOptions(params.signal);
 
     const priority = params.priority ?? "viewport";
     for (const id of params.channels) {
-      const unit = unitArrays(catalog, id);
+      const entry = eventEntry(catalog, id);
       yield await this.#limit(priority, () =>
-        queryUnitChannel(store, id, unit, params, opts),
+        queryEventChannel(
+          store,
+          id,
+          entry.arrays,
+          catalog.idByKey,
+          params,
+          opts,
+        ),
       );
     }
+  }
+
+  /**
+   * Reads per-bin event counts over a window from the coarsest count level whose bins
+   * fit within one pixel, falling back to the finest.
+   *
+   * Bins are delivered whole, so the first may start before `startUs` and the last
+   * run past `endUs`. Rejects for an unknown channel id, a continuous channel, a
+   * channel with no count levels, a non-positive `pixelWidthUs`, or an `endUs` before
+   * `startUs`.
+   */
+  async eventCounts(params: EventCountOptions): Promise<EventCounts> {
+    params.signal?.throwIfAborted();
+    requirePixelWidth(params.pixelWidthUs);
+    requireWindow(params.startUs, params.endUs);
+    const { catalog, store } = await this.#loadBundle();
+    const entry = eventEntry(catalog, params.channel);
+    const levels = entry.arrays.countLevels;
+    if (levels.length === 0) {
+      throw new Error(
+        `event channel ${params.channel} has no count levels; read its events with queryEvents()`,
+      );
+    }
+
+    const level = selectLevel(levels, params.pixelWidthUs);
+    const grid = {
+      startUs: level.offsetUs,
+      periodUs: level.periodUs,
+      binCount: level.binCount,
+    };
+    const range = binRange(grid, params.startUs, params.endUs);
+    const { data } = await this.#limit(params.priority ?? "viewport", () =>
+      readRows(
+        store,
+        level.path,
+        range,
+        ["uint32"],
+        toStoreOptions(params.signal),
+      ),
+    );
+    return {
+      channel: params.channel,
+      level: level.level,
+      startUs: grid.startUs + range.start * level.periodUs,
+      periodUs: level.periodUs,
+      labelCount: level.labelCount,
+      counts: Uint32Array.from(data),
+    };
+  }
+
+  /**
+   * Reads an event channel's mean waveform per label category, one row per label, or
+   * resolves undefined when the channel stores none.
+   *
+   * Rejects for an unknown channel id or a continuous channel.
+   */
+  async waveformMean(
+    params: WaveformMeanOptions,
+  ): Promise<Waveforms | undefined> {
+    params.signal?.throwIfAborted();
+    const { catalog, store } = await this.#loadBundle();
+    const mean = eventEntry(catalog, params.channel).arrays.waveformMean;
+    if (mean === undefined) {
+      return undefined;
+    }
+    const { data } = await this.#limit(params.priority ?? "viewport", () =>
+      readRows(
+        store,
+        mean.path,
+        { start: 0, end: mean.rows },
+        ["float32", "float64"],
+        toStoreOptions(params.signal),
+      ),
+    );
+    return {
+      pointsPerEvent: mean.pointsPerEvent,
+      periodUs: mean.periodUs,
+      eventSample: mean.eventSample,
+      data: Float64Array.from(data),
+    };
   }
 
   /**
    * Returns the spans where a channel has data, as `[startUs, endUs)` pairs clamped to the
    * window.
    *
-   * Reads the coarsest pyramid level and treats a bin as populated when any of its values
-   * is finite. Consecutive populated bins merge into one span, and gaps no wider than
-   * `gapThresholdUs` are bridged. Span edges align to that level's bin boundaries. Throws
-   * for an unknown channel id, a unit channel, or an `endUs` before `startUs`.
+   * Reads the coarsest pyramid level. A bin is populated when its `count` is above zero,
+   * or, on a level without `count`, when its min/max is finite. Consecutive populated
+   * bins merge into one span, and gaps no wider than `gapThresholdUs` are bridged. Span
+   * edges align to that level's bin boundaries. Throws for an unknown channel id, an
+   * event channel, or an `endUs` before `startUs`.
    */
   async dataSpans(
     params: DataSpanOptions,
@@ -396,19 +556,15 @@ export class StreamingClient {
     const level = entry.levels[entry.levels.length - 1]!;
 
     const read = planRead(entry, level, params);
-    const data = await this.#limit(params.priority ?? "background", () =>
-      readBins(store, level.path, read.range, opts),
+    const populated = await this.#limit(params.priority ?? "background", () =>
+      readCoverage(store, level, read.range, opts),
     );
 
     const gapThresholdUs = params.gapThresholdUs ?? 0;
-    const valuesPerBin = level.isMinMax ? 2 : 1;
-    const binCount = data.length / valuesPerBin;
     const spans: Array<[startUs: number, endUs: number]> = [];
 
-    for (let bin = 0; bin < binCount; bin++) {
-      const firstValue = bin * valuesPerBin;
-      const binValues = data.subarray(firstValue, firstValue + valuesPerBin);
-      if (!binValues.some((value) => Number.isFinite(value))) {
+    for (let bin = 0; bin < populated.length; bin++) {
+      if (populated[bin] === 0) {
         continue;
       }
 
@@ -457,7 +613,11 @@ export class StreamingClient {
     // consolidated store replaces with a plain group. Both read `/zarr.json`, and the
     // cache makes the second read free.
     const catalog = await readCatalog(cached);
-    return { catalog, store: await createConsolidatedStore(cached) };
+    return {
+      catalog,
+      store: await createConsolidatedStore(cached),
+      files: cached,
+    };
   }
 
   /** Plans the trace for one channel. */
@@ -621,6 +781,45 @@ function toStoreOptions(signal?: AbortSignal): StoreOptions | undefined {
   return signal === undefined ? undefined : { signal };
 }
 
+/**
+ * Returns, for each bin of a level read, 1 when the bin recorded a sample and 0 when
+ * it did not.
+ *
+ * `count` says how many samples a bin recorded, so a bin short by one sample still
+ * counts as covered. Without it, a bin is covered when its min/max is finite, and one
+ * bad sample makes the whole bin a gap.
+ */
+async function readCoverage(
+  store: Store,
+  level: LevelInfo,
+  range: { start: number; end: number },
+  opts: StoreOptions | undefined,
+): Promise<Uint8Array> {
+  if (level.countPath !== undefined) {
+    const counts = await readColumn(
+      store,
+      level.countPath,
+      range,
+      ["uint32"],
+      opts,
+    );
+    return Uint8Array.from(counts, (count) => (count > 0 ? 1 : 0));
+  }
+  const data = await readBins(store, level.path, range, opts);
+  const valuesPerBin = level.isMinMax ? 2 : 1;
+  const populated = new Uint8Array(data.length / valuesPerBin);
+  for (let bin = 0; bin < populated.length; bin++) {
+    const end = (bin + 1) * valuesPerBin;
+    for (let i = bin * valuesPerBin; i < end; i++) {
+      if (Number.isFinite(data[i]!)) {
+        populated[bin] = 1;
+        break;
+      }
+    }
+  }
+  return populated;
+}
+
 /** Returns the catalog entry for a channel id. Throws for an unknown id. */
 function channelEntry(catalog: BundleCatalog, id: string): ChannelEntry {
   const entry = catalog.byId.get(id);
@@ -630,33 +829,33 @@ function channelEntry(catalog: BundleCatalog, id: string): ChannelEntry {
   return entry;
 }
 
-/** Returns the entry for a continuous channel. Throws for an unknown id or a unit channel. */
-function continuousEntry(catalog: BundleCatalog, id: string): ChannelEntry {
+/** Returns the entry for a continuous channel. Throws for an unknown id or an event channel. */
+function continuousEntry(catalog: BundleCatalog, id: string): ContinuousEntry {
   const entry = channelEntry(catalog, id);
-  if (entry.info.kind !== "continuous") {
-    throw new Error(`channel ${id} is a unit channel; use queryUnits()`);
+  if (entry.kind !== "continuous") {
+    throw new Error(`channel ${id} is an event channel; use queryEvents()`);
   }
   return entry;
 }
 
-/** Returns the unit arrays for a channel. Throws for an unknown id or a continuous channel. */
-function unitArrays(catalog: BundleCatalog, id: string): UnitArrays {
+/** Returns the entry for an event channel. Throws for an unknown id or a continuous channel. */
+function eventEntry(catalog: BundleCatalog, id: string): EventEntry {
   const entry = channelEntry(catalog, id);
-  if (entry.unit === undefined) {
-    throw new Error(`channel ${id} is not a unit channel; use query()`);
+  if (entry.kind !== "event") {
+    throw new Error(`channel ${id} is a continuous channel; use query()`);
   }
-  return entry.unit;
+  return entry;
 }
 
-/** Returns a continuous channel's raw pyramid level, level 0. */
-function rawLevel(entry: ChannelEntry): LevelInfo {
-  // readCatalog rejects a continuous channel that has no raw level.
+/** Returns a continuous channel's raw level. */
+function rawLevel(entry: ContinuousEntry): LevelInfo {
+  // readCatalog rejects a continuous channel that has no raw array.
   return entry.levels.find((level) => !level.isMinMax)!;
 }
 
 /** Plans a read of one level, clamped to a window. */
 function planRead(
-  entry: ChannelEntry,
+  entry: ContinuousEntry,
   level: LevelInfo,
   window: { startUs: number; endUs: number },
 ): PlannedRead {

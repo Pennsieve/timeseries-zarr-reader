@@ -1,13 +1,13 @@
 {
   "shape": [
-    200
+    70000
   ],
   "data_type": "int64",
   "chunk_grid": {
     "name": "regular",
     "configuration": {
       "chunk_shape": [
-        200
+        73728
       ]
     }
   },
@@ -23,7 +23,7 @@
       "name": "sharding_indexed",
       "configuration": {
         "chunk_shape": [
-          200
+          8192
         ],
         "codecs": [
           {
@@ -56,6 +56,9 @@
     }
   ],
   "attributes": {},
+  "dimension_names": [
+    "event"
+  ],
   "zarr_format": 3,
   "node_type": "array",
   "storage_transformers": []

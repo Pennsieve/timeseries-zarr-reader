@@ -91,8 +91,8 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
   const remoteInfos = await remote.channelInfo();
   expect(remoteInfos).toEqual(localInfos);
 
-  const [info] = localInfos;
-  if (!info) throw new Error("bundle has no channels");
+  const info = localInfos.find((channel) => channel.kind === "continuous");
+  if (!info) throw new Error("bundle has no continuous channels");
   const window = { startUs: info.startUs, endUs: info.startUs + 10_000_000 };
 
   for (const params of [
@@ -110,13 +110,25 @@ test("acceptance: file and HTTP stores produce identical output", async () => {
 
   const spans = { channel: info.id, ...window };
   expect(await remote.dataSpans(spans)).toEqual(await local.dataSpans(spans));
+
+  const events = localInfos
+    .filter((channel) => channel.kind === "event")
+    .map((channel) => channel.id);
+  expect(events.length).toBeGreaterThan(0);
+  const eventQuery = { channels: events, startUs: 0, endUs: 30_000_000 };
+  expect(await collect(remote.queryEvents(eventQuery))).toEqual(
+    await collect(local.queryEvents(eventQuery)),
+  );
+  expect(await remote.recording()).toEqual(await local.recording());
 });
 
 test("reads a shard index with one suffix range request and never a HEAD", async () => {
   headRequests = 0;
   const remote = new StreamingClient({ store: await openBundle(baseUrl) });
-  const [info] = await remote.channelInfo();
-  if (!info) throw new Error("bundle has no channels");
+  const info = (await remote.channelInfo()).find(
+    (channel) => channel.kind === "continuous",
+  );
+  if (!info) throw new Error("bundle has no continuous channels");
 
   await collect(
     remote.query({

@@ -75,12 +75,77 @@ export function createCountingStore(inner: Store): CountingStore {
   };
 }
 
+/** The Zarr v3 dtypes the fixtures write. */
+export type FixtureDtype =
+  "float32" | "float64" | "int64" | "uint8" | "uint16" | "uint32";
+
+const BYTES_PER_VALUE: Record<FixtureDtype, number> = {
+  float32: 4,
+  float64: 8,
+  int64: 8,
+  uint8: 1,
+  uint16: 2,
+  uint32: 4,
+};
+
+/** Encodes values as one chunk of little-endian bytes of `dtype`. */
+export function encodeChunk(
+  values: ArrayLike<number | bigint>,
+  dtype: FixtureDtype,
+): Uint8Array {
+  const width = BYTES_PER_VALUE[dtype];
+  const bytes = new Uint8Array(values.length * width);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i]!;
+    const offset = i * width;
+    switch (dtype) {
+      case "float32":
+        view.setFloat32(offset, Number(value), true);
+        break;
+      case "float64":
+        view.setFloat64(offset, Number(value), true);
+        break;
+      case "int64":
+        view.setBigInt64(offset, BigInt(value), true);
+        break;
+      case "uint8":
+        view.setUint8(offset, Number(value));
+        break;
+      case "uint16":
+        view.setUint16(offset, Number(value), true);
+        break;
+      case "uint32":
+        view.setUint32(offset, Number(value), true);
+        break;
+    }
+  }
+  return bytes;
+}
+
+/** Encodes values as one chunk of little-endian float32 bytes. */
+export const float32Chunk = (values: number[]): Uint8Array =>
+  encodeChunk(values, "float32");
+
+/** Encodes values as one chunk of little-endian float64 bytes. */
+export const float64Chunk = (values: number[]): Uint8Array =>
+  encodeChunk(values, "float64");
+
+/** Encodes values as one chunk of little-endian int64 bytes. Accepts bigint for values beyond Number's safe range. */
+export const int64Chunk = (values: Array<number | bigint>): Uint8Array =>
+  encodeChunk(values, "int64");
+
+/** The fill value the format requires: NaN for floats, 0 for integers. */
+function fillValueOf(dtype: FixtureDtype): "NaN" | 0 {
+  return dtype.startsWith("float") ? "NaN" : 0;
+}
+
 /** The metadata node for one unsharded, uncompressed little-endian array. */
 function arrayNode(
   shape: number[],
   chunkShape: number[],
   attributes: Record<string, unknown>,
-  dataType: string,
+  dataType: FixtureDtype,
 ): Record<string, unknown> {
   return {
     zarr_format: 3,
@@ -90,7 +155,7 @@ function arrayNode(
     chunk_grid: { name: "regular", configuration: { chunk_shape: chunkShape } },
     chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
     codecs: [{ name: "bytes", configuration: { endian: "little" } }],
-    fill_value: 0,
+    fill_value: fillValueOf(dataType),
     attributes,
   };
 }
@@ -104,85 +169,165 @@ export function arrayMetadata(
   shape: number[],
   chunkShape: number[] = shape,
   attributes: Record<string, unknown> = {},
-  dataType = "float32",
+  dataType: FixtureDtype = "float32",
 ): string {
   return JSON.stringify(arrayNode(shape, chunkShape, attributes, dataType));
 }
 
-/** Encodes values as one chunk of little-endian float32 bytes. */
-export function float32Chunk(values: number[]): Uint8Array {
-  const bytes = new Uint8Array(values.length * 4);
-  const view = new DataView(bytes.buffer);
-  values.forEach((value, index) => {
-    view.setFloat32(index * 4, value, true);
-  });
-  return bytes;
+type Files = Record<`/${string}`, string | Uint8Array>;
+
+/**
+ * Writes one array into `files`: its `zarr.json` and one chunk per `chunkLength` rows
+ * along the first axis, trailing axes unchunked. A trailing partial chunk is padded
+ * with the fill value, as Zarr stores it. Returns the array's metadata node for the
+ * consolidated map.
+ */
+function writeArray(
+  files: Files,
+  path: string,
+  values: ArrayLike<number | bigint>,
+  shape: number[],
+  dtype: FixtureDtype,
+  attributes: Record<string, unknown> = {},
+  chunkLength = shape[0],
+): Record<string, unknown> {
+  const rows = shape[0]!;
+  const rowWidth = shape.slice(1).reduce((product, dim) => product * dim, 1);
+  const chunkRows = Math.max(1, chunkLength ?? rows);
+  const chunkShape = [chunkRows, ...shape.slice(1)];
+  const node = arrayNode(shape, chunkShape, attributes, dtype);
+  files[`/${path}/zarr.json`] = JSON.stringify(node);
+
+  const fill = dtype.startsWith("float") ? NaN : 0;
+  const trailing = shape
+    .slice(1)
+    .map(() => "/0")
+    .join("");
+  for (let chunk = 0; chunk * chunkRows < rows; chunk++) {
+    const padded: Array<number | bigint> = [];
+    for (let i = 0; i < chunkRows * rowWidth; i++) {
+      const index = chunk * chunkRows * rowWidth + i;
+      padded.push(index < values.length ? values[index]! : fill);
+    }
+    files[`/${path}/c/${chunk}${trailing}`] = encodeChunk(padded, dtype);
+  }
+  return node;
 }
 
-/** Encodes values as one chunk of little-endian float64 bytes. */
-export function float64Chunk(values: number[]): Uint8Array {
-  const bytes = new Uint8Array(values.length * 8);
-  const view = new DataView(bytes.buffer);
-  values.forEach((value, index) => {
-    view.setFloat64(index * 8, value, true);
-  });
-  return bytes;
-}
-
-/** Encodes values as one chunk of little-endian int64 bytes. Accepts bigint for values beyond Number's safe range. */
-export function int64Chunk(values: Array<number | bigint>): Uint8Array {
-  const bytes = new Uint8Array(values.length * 8);
-  const view = new DataView(bytes.buffer);
-  values.forEach((value, index) => {
-    view.setBigInt64(index * 8, BigInt(value), true);
-  });
-  return bytes;
-}
-
-/** One pyramid level of a fixture channel: rank 1 is raw, rank 2 with a trailing 2 is min/max. */
+/** One level of a fixture continuous channel, numbered 1, 2, ... in list order. */
 export interface FixtureLevel {
-  shape: number[];
   periodUs: number;
-  /** Chunk shape along every axis. Defaults to `shape`, one chunk for the level. */
-  chunkShape?: number[];
+  /** Flattened `[min, max, ...]` pairs. */
+  pairs: number[];
+  /** Bins per chunk. Defaults to one chunk for the level. */
+  chunkLength?: number;
+  mean?: number[];
+  var?: number[];
+  count?: number[];
 }
 
-/** A non-level child array of a fixture channel. */
-export interface FixtureArray {
-  shape: number[];
-  dataType?: string;
-  attributes?: Record<string, unknown>;
-}
-
-/** One channel group of a fixture bundle, at digit path `path`. */
-export interface FixtureChannel {
-  path: string;
-  attributes: Record<string, unknown>;
-  /** Pyramid levels, named by index under the channel: `0/0`, `0/1`, ... */
+/** One continuous channel of a fixture bundle. */
+export interface FixtureContinuous {
+  /** The channel key: the name of its group. */
+  key: string;
+  /** The channel group's `tsz` object. */
+  tsz: Record<string, unknown>;
+  raw: number[];
+  /** Samples per raw chunk. Defaults to one chunk. */
+  rawChunkLength?: number;
   levels?: FixtureLevel[];
-  /** Non-level child arrays by name. A bare number[] is a float32 shape with no attributes. */
-  extraArrays?: Record<string, number[] | FixtureArray>;
+}
+
+/** A snippet array: `samples` is rows flattened, one row of `pointsPerEvent` values each. */
+export interface FixtureSnippets {
+  periodUs: number;
+  pointsPerEvent: number;
+  samples: number[];
+  eventSample?: number;
+}
+
+/** One count level of a fixture event channel, numbered 1, 2, ... in list order. */
+export interface FixtureCountLevel {
+  periodUs: number;
+  offsetUs?: number;
+  labelCount: number;
+  /** Flattened `(bins, labelCount)` counts. */
+  counts: number[];
+}
+
+/** One event channel of a fixture bundle. */
+export interface FixtureEvent {
+  key: string;
+  tsz: Record<string, unknown>;
+  /** Event times in microseconds, written as int64. */
+  events: number[];
+  durations?: number[];
+  labels?: number[];
+  values?: number[];
+  text?: string[];
+  /** Channel keys each event applies to. The row width covers the bundle's largest key. */
+  channels?: number[][];
+  waveforms?: FixtureSnippets;
+  waveformMean?: FixtureSnippets;
+  countLevels?: FixtureCountLevel[];
+  /** Further arrays under the channel, which a reader must ignore. */
+  extraArrays?: Record<string, { shape: number[]; dataType?: FixtureDtype }>;
+}
+
+export type FixtureChannel = FixtureContinuous | FixtureEvent;
+
+/** Options of {@link bundleFiles}. */
+export interface FixtureOptions {
+  /** The root `tsz` object. `null` writes a root with no `tsz` at all. Defaults to version 1.0. */
+  rootTsz?: Record<string, unknown> | null;
+  /** Content of `recording.json`. An object is serialized; a string is written as is. */
+  recording?: Record<string, unknown> | string;
+}
+
+/** Encodes strings as rows of UTF-8 zero-padded to the longest, at least one byte wide. */
+function textRows(strings: string[]): { bytes: number[]; width: number } {
+  const encoded = strings.map((text) => new TextEncoder().encode(text));
+  const width = Math.max(1, ...encoded.map((row) => row.length));
+  const bytes: number[] = [];
+  for (const row of encoded) {
+    bytes.push(...row, ...new Array<number>(width - row.length).fill(0));
+  }
+  return { bytes, width };
+}
+
+/** Encodes channel key lists as bitmask rows, bit `k mod 8` of byte `floor(k / 8)`. */
+function maskRows(keyLists: number[][], width: number): number[] {
+  const bytes: number[] = [];
+  for (const keys of keyLists) {
+    const row = new Array<number>(width).fill(0);
+    for (const key of keys) {
+      row[key >> 3]! |= 1 << (key & 7);
+    }
+    bytes.push(...row);
+  }
+  return bytes;
 }
 
 /**
- * Builds a bundle's root `zarr.json` as a JSON string, with `consolidated_metadata` inlining
- * every descendant.
+ * Builds every file of a readable in-memory TS-Zarr 1.0 bundle: the consolidated root,
+ * each group's and array's own `zarr.json`, and each array's chunks.
  *
- * Mirrors a real bundle. Paths in `metadata` are flat and relative (`"0"`, `"0/1"`), and each
- * channel group carries its own empty `consolidated_metadata`, as the writer emits.
- *
- * `root` shallow-merges over the root object, for building malformed bundles. An
- * `undefined` value drops its key: `JSON.stringify` omits undefined values.
+ * Mirrors a real bundle. Paths in the consolidated map are flat and relative (`"0"`,
+ * `"0/1/minmax"`), and each group carries its own empty `consolidated_metadata`, as
+ * zarr-python writes it. Arrays are unsharded and uncompressed.
  */
-export function bundleMetadata(
+export function bundleFiles(
   channels: FixtureChannel[],
-  root: Record<string, unknown> = {},
-): string {
+  options: FixtureOptions = {},
+): Files {
+  const files: Files = {};
   const metadata: Record<string, unknown> = {};
+  const maxKey = Math.max(0, ...channels.map((channel) => Number(channel.key)));
+  const maskWidth = Math.ceil((maxKey + 1) / 8);
 
-  for (const channel of channels) {
-    metadata[channel.path] = {
-      attributes: channel.attributes,
+  const group = (path: string, attributes: Record<string, unknown>): void => {
+    metadata[path] = {
+      attributes,
       zarr_format: 3,
       node_type: "group",
       consolidated_metadata: {
@@ -191,29 +336,168 @@ export function bundleMetadata(
         metadata: {},
       },
     };
+    files[`/${path}/zarr.json`] = JSON.stringify({
+      attributes,
+      zarr_format: 3,
+      node_type: "group",
+    });
+  };
+  const array = (
+    path: string,
+    values: ArrayLike<number | bigint>,
+    shape: number[],
+    dtype: FixtureDtype,
+    attributes?: Record<string, unknown>,
+    chunkLength?: number,
+  ): void => {
+    metadata[path] = writeArray(
+      files,
+      path,
+      values,
+      shape,
+      dtype,
+      attributes,
+      chunkLength,
+    );
+  };
+  const snippetAttrs = (
+    snippets: FixtureSnippets,
+  ): Record<string, unknown> => ({
+    tsz: {
+      period_us: snippets.periodUs,
+      ...(snippets.eventSample === undefined
+        ? {}
+        : { event_sample: snippets.eventSample }),
+    },
+  });
 
-    (channel.levels ?? []).forEach((level, index) => {
-      metadata[`${channel.path}/${index}`] = arrayNode(
-        level.shape,
-        level.chunkShape ?? level.shape,
-        { period_us: level.periodUs },
+  for (const channel of channels) {
+    const { key } = channel;
+    group(key, { tsz: channel.tsz });
+
+    if ("raw" in channel) {
+      array(
+        `${key}/raw`,
+        channel.raw,
+        [channel.raw.length],
         "float32",
+        {},
+        channel.rawChunkLength,
+      );
+      (channel.levels ?? []).forEach((level, index) => {
+        const name = `${key}/${index + 1}`;
+        const bins = level.pairs.length / 2;
+        group(name, { tsz: { period_us: level.periodUs } });
+        array(
+          `${name}/minmax`,
+          level.pairs,
+          [bins, 2],
+          "float32",
+          {},
+          level.chunkLength,
+        );
+        if (level.mean) {
+          array(
+            `${name}/mean`,
+            level.mean,
+            [bins],
+            "float32",
+            {},
+            level.chunkLength,
+          );
+        }
+        if (level.var) {
+          array(
+            `${name}/var`,
+            level.var,
+            [bins],
+            "float32",
+            {},
+            level.chunkLength,
+          );
+        }
+        if (level.count) {
+          array(
+            `${name}/count`,
+            level.count,
+            [bins],
+            "uint32",
+            {},
+            level.chunkLength,
+          );
+        }
+      });
+      continue;
+    }
+
+    const n = channel.events.length;
+    array(`${key}/events`, channel.events, [n], "int64");
+    if (channel.durations) {
+      array(`${key}/durations`, channel.durations, [n], "int64");
+    }
+    if (channel.labels) {
+      array(`${key}/labels`, channel.labels, [n], "uint16");
+    }
+    if (channel.values) {
+      array(`${key}/values`, channel.values, [n], "float32");
+    }
+    if (channel.text) {
+      const rows = textRows(channel.text);
+      array(`${key}/text`, rows.bytes, [n, rows.width], "uint8");
+    }
+    if (channel.channels) {
+      array(
+        `${key}/channels`,
+        maskRows(channel.channels, maskWidth),
+        [n, maskWidth],
+        "uint8",
+      );
+    }
+    for (const [name, snippets] of [
+      ["waveforms", channel.waveforms],
+      ["waveform_mean", channel.waveformMean],
+    ] as const) {
+      if (snippets) {
+        array(
+          `${key}/${name}`,
+          snippets.samples,
+          [
+            snippets.samples.length / snippets.pointsPerEvent,
+            snippets.pointsPerEvent,
+          ],
+          "float32",
+          snippetAttrs(snippets),
+        );
+      }
+    }
+    (channel.countLevels ?? []).forEach((level, index) => {
+      const name = `${key}/${index + 1}`;
+      group(name, {
+        tsz: {
+          period_us: level.periodUs,
+          ...(level.offsetUs === undefined
+            ? {}
+            : { offset_us: level.offsetUs }),
+        },
+      });
+      array(
+        `${name}/count`,
+        level.counts,
+        [level.counts.length / level.labelCount, level.labelCount],
+        "uint32",
       );
     });
-
-    for (const [name, spec] of Object.entries(channel.extraArrays ?? {})) {
-      const array = Array.isArray(spec) ? { shape: spec } : spec;
-      metadata[`${channel.path}/${name}`] = arrayNode(
-        array.shape,
-        array.shape,
-        array.attributes ?? {},
-        array.dataType ?? "float32",
-      );
+    for (const [name, extra] of Object.entries(channel.extraArrays ?? {})) {
+      array(`${key}/${name}`, [], extra.shape, extra.dataType ?? "float32");
     }
   }
 
-  return JSON.stringify({
-    attributes: {},
+  const attributes =
+    options.rootTsz === null
+      ? {}
+      : { tsz: options.rootTsz ?? { version: "1.0" } };
+  files["/zarr.json"] = JSON.stringify({
+    attributes,
     zarr_format: 3,
     node_type: "group",
     consolidated_metadata: {
@@ -221,111 +505,13 @@ export function bundleMetadata(
       must_understand: false,
       metadata,
     },
-    ...root,
   });
-}
-
-/**
- * One pyramid level with its data: raw samples, or flattened [min, max, ...] pairs.
- *
- * `chunkLength` splits the time axis into chunks of that many bins, each its own store
- * key, so a read across a chunk boundary exercises more than one key. The default is one
- * chunk holding the level.
- */
-export type BundleLevel =
-  | { periodUs: number; samples: number[]; chunkLength?: number }
-  | { periodUs: number; pairs: number[]; chunkLength?: number };
-
-/** One channel of a complete in-memory bundle. */
-export interface BundleChannel {
-  path: string;
-  attributes: Record<string, unknown>;
-  levels?: BundleLevel[];
-  /** Event timestamps in microseconds, written as int64. */
-  events?: number[];
-  /** Spike waveforms: `samples` is rows flattened, one row of `pointsPerEvent` per event. */
-  waveforms?: { periodUs: number; pointsPerEvent: number; samples: number[] };
-}
-
-/**
- * Builds every file of a readable in-memory bundle: the consolidated root plus each array's
- * own `zarr.json` and single chunk. Root entries and per-array metadata are generated from
- * the same description.
- */
-export function bundleFiles(
-  channels: BundleChannel[],
-): Record<`/${string}`, string | Uint8Array> {
-  const files: Record<`/${string}`, string | Uint8Array> = {};
-  const rootChannels: FixtureChannel[] = [];
-
-  for (const channel of channels) {
-    const levels: FixtureLevel[] = [];
-    (channel.levels ?? []).forEach((level, index) => {
-      const raw = "samples" in level;
-      const values = raw ? level.samples : level.pairs;
-      const width = raw ? 1 : 2;
-      const bins = values.length / width;
-      const chunkBins = level.chunkLength ?? bins;
-      const shape = raw ? [bins] : [bins, 2];
-      const chunkShape = raw ? [chunkBins] : [chunkBins, 2];
-      levels.push({ shape, periodUs: level.periodUs, chunkShape });
-      files[`/${channel.path}/${index}/zarr.json`] = arrayMetadata(
-        shape,
-        chunkShape,
-        { period_us: level.periodUs },
-      );
-      for (let chunk = 0; chunk * chunkBins < bins; chunk++) {
-        const slice = values.slice(
-          chunk * chunkBins * width,
-          (chunk + 1) * chunkBins * width,
-        );
-        // A trailing partial chunk is padded to the chunk shape, as Zarr stores it.
-        const padded = slice.concat(
-          new Array<number>(chunkBins * width - slice.length).fill(0),
-        );
-        files[`/${channel.path}/${index}/c/${chunk}${raw ? "" : "/0"}`] =
-          float32Chunk(padded);
-      }
-    });
-
-    const extraArrays: Record<string, FixtureArray> = {};
-    if (channel.events) {
-      const shape = [channel.events.length];
-      extraArrays.events = { shape, dataType: "int64" };
-      files[`/${channel.path}/events/zarr.json`] = arrayMetadata(
-        shape,
-        shape,
-        {},
-        "int64",
-      );
-      files[`/${channel.path}/events/c/0`] = int64Chunk(channel.events);
-    }
-    if (channel.waveforms) {
-      const { periodUs, pointsPerEvent, samples } = channel.waveforms;
-      const shape = [samples.length / pointsPerEvent, pointsPerEvent];
-      extraArrays.waveforms = {
-        shape,
-        attributes: { period_us: periodUs },
-      };
-      files[`/${channel.path}/waveforms/zarr.json`] = arrayMetadata(
-        shape,
-        shape,
-        {
-          period_us: periodUs,
-        },
-      );
-      files[`/${channel.path}/waveforms/c/0/0`] = float32Chunk(samples);
-    }
-
-    rootChannels.push({
-      path: channel.path,
-      attributes: channel.attributes,
-      levels,
-      extraArrays,
-    });
+  if (options.recording !== undefined) {
+    files["/recording.json"] =
+      typeof options.recording === "string"
+        ? options.recording
+        : JSON.stringify(options.recording);
   }
-
-  files["/zarr.json"] = bundleMetadata(rootChannels);
   return files;
 }
 

@@ -6,19 +6,27 @@
 export type {
   ByteRange,
   ChannelInfo,
-  EventBatch,
+  ContinuousChannelInfo,
+  EventChannelInfo,
+  EventColumn,
+  EventCounts,
+  EventWindow,
   FilterSpec,
   MontagePair,
   ReadPriority,
+  RecordingInfo,
   Segment,
   Store,
   StoreOptions,
+  Waveforms,
 } from "./types.js";
 export { FetchStore, openBundle } from "./stores/open-bundle.js";
 export { RawReadTooLargeError, StreamingClient } from "./client.js";
 export type {
   DataSpanOptions,
+  EventCountOptions,
+  EventQueryOptions,
   QueryOptions,
   StreamingClientOptions,
-  UnitQueryOptions,
+  WaveformMeanOptions,
 } from "./client.js";
