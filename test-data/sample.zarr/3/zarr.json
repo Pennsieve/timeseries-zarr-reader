@@ -1,11 +1,18 @@
 {
   "attributes": {
-    "id": "unitA",
-    "rate_hz": 30000.0,
-    "start_us": 1704067200000000,
-    "kind": "unit",
-    "name": "Unit A",
-    "unit": "uV"
+    "tsz": {
+      "kind": "event",
+      "name": "Unit A",
+      "id": "unitA",
+      "label_names": [
+        "u0",
+        "u1",
+        "u2"
+      ],
+      "provenance": {
+        "software": "generate-test-bundle.py"
+      }
+    }
   },
   "zarr_format": 3,
   "node_type": "group"

@@ -9,7 +9,7 @@ import {
 } from "./cache.js";
 import type { Store } from "../types.js";
 import {
-  bundleMetadata,
+  bundleFiles,
   createCountingStore,
   createMemoryStore,
 } from "../test-utils.js";
@@ -659,20 +659,19 @@ describe("createCoalescingStore", () => {
 });
 
 describe("createConsolidatedStore", () => {
-  const root = bundleMetadata([
+  const root = bundleFiles([
     {
-      path: "0",
-      attributes: {
+      key: "0",
+      tsz: {
+        kind: "continuous",
         id: "a",
         name: "A",
         unit: "uV",
         rate_hz: 1000,
-        start_us: 0,
-        kind: "continuous",
       },
-      levels: [{ shape: [32], periodUs: 1000 }],
+      raw: new Array<number>(32).fill(0),
     },
-  ]);
+  ])["/zarr.json"] as string;
 
   test("serves an array's metadata without reading its own key", async () => {
     const { store, reads } = createCountingStore(
@@ -680,11 +679,11 @@ describe("createConsolidatedStore", () => {
     );
     const consolidated = await createConsolidatedStore(store);
 
-    const raw = await consolidated.get("/0/0/zarr.json");
+    const raw = await consolidated.get("/0/raw/zarr.json");
     expect(raw).toBeDefined();
     const node: unknown = JSON.parse(new TextDecoder().decode(raw));
     expect(node).toMatchObject({ node_type: "array", shape: [32] });
-    expect(reads.has("/0/0/zarr.json")).toBe(false);
+    expect(reads.has("/0/raw/zarr.json")).toBe(false);
   });
 
   test("reports the root group without its consolidated metadata", async () => {

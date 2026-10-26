@@ -19,7 +19,13 @@ test("the package exports exactly the documented runtime symbols", () => {
 test("the package re-exports the declared types", () => {
   expectTypeOf<reader.ByteRange>().toEqualTypeOf<types.ByteRange>();
   expectTypeOf<reader.ChannelInfo>().toEqualTypeOf<types.ChannelInfo>();
-  expectTypeOf<reader.EventBatch>().toEqualTypeOf<types.EventBatch>();
+  expectTypeOf<reader.ContinuousChannelInfo>().toEqualTypeOf<types.ContinuousChannelInfo>();
+  expectTypeOf<reader.EventChannelInfo>().toEqualTypeOf<types.EventChannelInfo>();
+  expectTypeOf<reader.EventColumn>().toEqualTypeOf<types.EventColumn>();
+  expectTypeOf<reader.EventCounts>().toEqualTypeOf<types.EventCounts>();
+  expectTypeOf<reader.EventWindow>().toEqualTypeOf<types.EventWindow>();
+  expectTypeOf<reader.RecordingInfo>().toEqualTypeOf<types.RecordingInfo>();
+  expectTypeOf<reader.Waveforms>().toEqualTypeOf<types.Waveforms>();
   expectTypeOf<reader.FilterSpec>().toEqualTypeOf<types.FilterSpec>();
   expectTypeOf<reader.MontagePair>().toEqualTypeOf<types.MontagePair>();
   expectTypeOf<reader.ReadPriority>().toEqualTypeOf<types.ReadPriority>();
@@ -29,5 +35,7 @@ test("the package re-exports the declared types", () => {
   expectTypeOf<reader.DataSpanOptions>().toEqualTypeOf<client.DataSpanOptions>();
   expectTypeOf<reader.QueryOptions>().toEqualTypeOf<client.QueryOptions>();
   expectTypeOf<reader.StreamingClientOptions>().toEqualTypeOf<client.StreamingClientOptions>();
-  expectTypeOf<reader.UnitQueryOptions>().toEqualTypeOf<client.UnitQueryOptions>();
+  expectTypeOf<reader.EventCountOptions>().toEqualTypeOf<client.EventCountOptions>();
+  expectTypeOf<reader.EventQueryOptions>().toEqualTypeOf<client.EventQueryOptions>();
+  expectTypeOf<reader.WaveformMeanOptions>().toEqualTypeOf<client.WaveformMeanOptions>();
 });

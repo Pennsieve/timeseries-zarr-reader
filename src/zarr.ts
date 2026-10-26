@@ -1,4 +1,5 @@
 import { get, NotFoundError, open, registry, root, slice } from "zarrita";
+import type { Chunk, DataType } from "zarrita";
 import type { Store, StoreOptions } from "./types.js";
 
 /**
@@ -26,21 +27,73 @@ async function openArray(
   }
 }
 
+type OpenedArray = Awaited<ReturnType<typeof openArray>>;
+
+/** The numeric dtypes the reader accepts besides int64, by Zarr v3 name. */
+export type NumericDtype =
+  "float32" | "float64" | "uint8" | "uint16" | "uint32";
+
+const CONSTRUCTORS = {
+  float32: Float32Array,
+  float64: Float64Array,
+  uint8: Uint8Array,
+  uint16: Uint16Array,
+  uint32: Uint32Array,
+} as const;
+
+/** The typed array zarrita returns for a {@link NumericDtype}. */
+export type ArrayOf<D extends NumericDtype> = InstanceType<
+  (typeof CONSTRUCTORS)[D]
+>;
+
 /**
- * Rejects an array whose dtype is neither float32 nor float64.
- *
- * `role` names the array's part in the message.
+ * Returns which of `dtypes` the array has. Throws when it has none of them, naming
+ * the array's `role` in the message.
  */
-function requireFloatDtype(
-  array: Awaited<ReturnType<typeof openArray>>,
+function matchDtype<D extends NumericDtype>(
+  array: OpenedArray,
+  dtypes: readonly D[],
   role: string,
   path: `/${string}`,
-): void {
-  if (!array.is("float32") && !array.is("float64")) {
+): D {
+  const matched = dtypes.find((dtype) => array.is(dtype));
+  if (matched === undefined) {
     throw new Error(
-      `${role} ${path} must be float32 or float64 (got ${array.dtype})`,
+      `${role} ${path} must be ${dtypes.join(" or ")} (got ${array.dtype})`,
     );
   }
+  return matched;
+}
+
+/**
+ * Flattens a rank-2 read row-major, in the typed array of `dtype`.
+ *
+ * zarrita returns a read laid out in the array's stored order and reports the strides.
+ * An array written with a `transpose` codec comes back column-major, and flattening
+ * that as is would silently pair the wrong values: a bin's min with another bin's max,
+ * text swapped between events. No producer we read writes a transpose codec, but the
+ * format allows any codec. A row-major read is returned as it is.
+ */
+function flattenRows<D extends NumericDtype>(
+  dtype: D,
+  region: Chunk<DataType>,
+): ArrayOf<D> {
+  const rows = region.shape[0]!;
+  const cols = region.shape[1]!;
+  const rowStride = region.stride[0]!;
+  const colStride = region.stride[1]!;
+  // dtype was matched against the array, so this is its typed array.
+  const data = region.data as ArrayOf<D>;
+  if (rowStride === cols && colStride === 1) {
+    return data;
+  }
+  const out = new CONSTRUCTORS[dtype](rows * cols) as ArrayOf<D>;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      out[row * cols + col] = data[row * rowStride + col * colStride]!;
+    }
+  }
+  return out;
 }
 
 /**
@@ -65,23 +118,89 @@ export async function readBins(
   }
 
   const array = await openArray(store, path, opts);
-  requireFloatDtype(array, "level", path);
+  const dtype = matchDtype(array, ["float32", "float64"], "level", path);
 
   const bins = slice(range.start, range.end);
   const rank = array.shape.length;
   if (rank === 1) {
     const region = await get(array, [bins], opts);
-    return Float64Array.from(region.data);
+    return Float64Array.from(region.data as ArrayLike<number>);
   }
   if (rank === 2 && array.shape[1] === 2) {
-    // get() returns the [n, 2] read already flattened to interleaved [min, max, ...].
+    // Row-major, the [n, 2] read is interleaved [min, max, ...].
     const region = await get(array, [bins, null], opts);
-    return Float64Array.from(region.data);
+    return Float64Array.from(flattenRows(dtype, region));
   }
 
   throw new Error(
     `level ${path} has unsupported shape ${JSON.stringify(array.shape)} (expected [n] or [n, 2])`,
   );
+}
+
+/**
+ * Reads a rank-1 numeric array over a half-open index range, in the array's own
+ * typed array.
+ *
+ * `dtypes` lists what the array may be; the result is one of their typed arrays, and
+ * a caller widens it as it needs. int64 arrays are read through
+ * {@link openTimestamps} instead, which converts them to numbers. An empty range
+ * returns an empty array of the matched kind.
+ *
+ * Throws when no array exists at `path`, it is not rank 1, or its dtype is not one of
+ * `dtypes`.
+ */
+export async function readColumn<D extends NumericDtype>(
+  store: Store,
+  path: `/${string}`,
+  range: { start: number; end: number },
+  dtypes: readonly D[],
+  opts?: StoreOptions,
+): Promise<ArrayOf<D>> {
+  const array = await openArray(store, path, opts);
+  if (array.shape.length !== 1) {
+    throw new Error(
+      `column ${path} must be rank 1 (got shape ${JSON.stringify(array.shape)})`,
+    );
+  }
+  const dtype = matchDtype(array, dtypes, "column", path);
+  if (range.end <= range.start) {
+    return new CONSTRUCTORS[dtype](0) as ArrayOf<D>;
+  }
+  const region = await get(array, [slice(range.start, range.end)], opts);
+  return region.data as ArrayOf<D>;
+}
+
+/**
+ * Reads whole rows of a rank-2 numeric array over a half-open row range.
+ *
+ * Rows come back flattened row-major, `rowLength` values per row, in the array's own
+ * typed array as {@link readColumn} returns it. An empty range returns empty data and
+ * the row length.
+ *
+ * Throws when no array exists at `path`, it is not rank 2, or its dtype is not one of
+ * `dtypes`.
+ */
+export async function readRows<D extends NumericDtype>(
+  store: Store,
+  path: `/${string}`,
+  range: { start: number; end: number },
+  dtypes: readonly D[],
+  opts?: StoreOptions,
+): Promise<{ data: ArrayOf<D>; rowLength: number }> {
+  const array = await openArray(store, path, opts);
+  if (array.shape.length !== 2) {
+    throw new Error(
+      `row array ${path} must be rank 2 (got shape ${JSON.stringify(array.shape)})`,
+    );
+  }
+  const dtype = matchDtype(array, dtypes, "row array", path);
+
+  const rowLength = array.shape[1]!;
+  if (range.end <= range.start) {
+    return { data: new CONSTRUCTORS[dtype](0) as ArrayOf<D>, rowLength };
+  }
+  const region = await get(array, [slice(range.start, range.end), null], opts);
+  return { data: flattenRows(dtype, region), rowLength };
 }
 
 /** A rank-1 int64 timestamp array, opened once for repeated range reads. */
@@ -100,6 +219,7 @@ const MAX_SAFE_TIMESTAMP = BigInt(Number.MAX_SAFE_INTEGER);
  *
  * Stored int64 values are converted to numbers. The conversion is exact for
  * microsecond timestamps. A value outside the safe integer range throws a RangeError.
+ * Durations are read the same way.
  *
  * Throws when no array exists at `path` or it is not rank-1 int64.
  */
@@ -136,37 +256,6 @@ export async function openTimestamps(
       return out;
     },
   };
-}
-
-/**
- * Reads whole rows of a rank-2 array over a half-open row range.
- *
- * Rows are returned flattened row-major, `rowLength` values per row, widened to
- * `Float64Array`. An empty range returns empty data and the row length.
- *
- * Throws when no array exists at `path`, it is not rank 2, or its dtype is neither
- * float32 nor float64.
- */
-export async function readRows(
-  store: Store,
-  path: `/${string}`,
-  range: { start: number; end: number },
-  opts?: StoreOptions,
-): Promise<{ data: Float64Array; rowLength: number }> {
-  const array = await openArray(store, path, opts);
-  if (array.shape.length !== 2) {
-    throw new Error(
-      `row array ${path} must be rank 2 (got shape ${JSON.stringify(array.shape)})`,
-    );
-  }
-  requireFloatDtype(array, "row array", path);
-
-  const rowLength = array.shape[1]!;
-  if (range.end <= range.start) {
-    return { data: new Float64Array(0), rowLength };
-  }
-  const region = await get(array, [slice(range.start, range.end), null], opts);
-  return { data: Float64Array.from(region.data), rowLength };
 }
 
 /**

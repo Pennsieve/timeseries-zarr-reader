@@ -1,8 +1,8 @@
 /**
  * A contiguous run of one trace's data over a queried window.
  *
- * Timestamps are UTC microseconds. Values are in physical units; the reader
- * does not negate them.
+ * Times are microseconds from the bundle's origin. Values are in physical units; the
+ * reader does not negate them.
  */
 export interface Segment {
   /** Channel id the segment belongs to (a compound key when montaged). */
@@ -21,16 +21,28 @@ export interface Segment {
   readonly data: Float64Array;
 }
 
-/**
- * Per-channel metadata read from the bundle's Zarr group attributes.
- *
- * Timestamps are UTC microseconds.
- */
-export interface ChannelInfo {
-  /** Stable channel id used to address the channel in queries. */
+/** Fields every channel carries, whatever its kind. */
+export interface ChannelBase {
+  /** The channel's key: the name of its group in the bundle, a decimal integer. */
+  readonly key: string;
+  /**
+   * Id used to address the channel in queries: the producer's id, or the key when
+   * the bundle records none.
+   */
   readonly id: string;
   /** Human-readable channel label. */
   readonly name: string;
+  /** What produced the channel, as the bundle records it. */
+  readonly provenance?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Metadata of a regularly sampled channel.
+ *
+ * Times are microseconds from the bundle's origin.
+ */
+export interface ContinuousChannelInfo extends ChannelBase {
+  readonly kind: "continuous";
   /** Physical unit of the samples (e.g. "uV"). */
   readonly unit: string;
   /** Native sampling rate, in hertz. */
@@ -39,9 +51,33 @@ export interface ChannelInfo {
   readonly startUs: number;
   /** Exclusive end of the channel's data: one sample period past the last sample. */
   readonly endUs: number;
-  /** "continuous" for a sampled waveform, "unit" for a discrete event channel. */
-  readonly kind: "continuous" | "unit";
 }
+
+/** The optional per-event columns an event channel can store. */
+export type EventColumn =
+  "durations" | "labels" | "values" | "text" | "channels" | "waveforms";
+
+/** Metadata of an event channel: sorted spikes, detector output, or annotations. */
+export interface EventChannelInfo extends ChannelBase {
+  readonly kind: "event";
+  /** Unit of the `values` column, when the bundle declares one. */
+  readonly unit?: string;
+  /** Number of events in the channel. */
+  readonly eventCount: number;
+  /** The optional per-event columns the channel stores. */
+  readonly columns: readonly EventColumn[];
+  /** Name of each label category, indexed by label value. */
+  readonly labelNames?: readonly string[];
+  /** Upper bound on every duration. Set whenever the bundle declares one. */
+  readonly maxDurationUs?: number;
+  /** True when the channel stores a mean waveform per label category. */
+  readonly hasWaveformMean: boolean;
+  /** Number of count levels. 0 when the channel stores none. */
+  readonly countLevels: number;
+}
+
+/** Per-channel metadata read from a channel group's `tsz` attributes. */
+export type ChannelInfo = ContinuousChannelInfo | EventChannelInfo;
 
 /**
  * A bipolar montage pair. The rendered trace is `lead[i] - secondary[i]`, in
@@ -81,32 +117,85 @@ export type FilterSpec =
       readonly highHz: number;
     };
 
+/** Waveform snippets: one row per event, or one per label for a channel's mean waveforms. */
+export interface Waveforms {
+  /** Samples per snippet. */
+  readonly pointsPerEvent: number;
+  /** Time between snippet samples. */
+  readonly periodUs: number;
+  /** Index of the snippet sample recorded at the event time. */
+  readonly eventSample: number;
+  /** Snippet samples, one row of `pointsPerEvent` values per snippet, flattened row-major. */
+  readonly data: Float64Array;
+}
+
 /**
- * One unit channel's events within a query window, with their waveforms when
- * those were fetched.
+ * One event channel's events over a query window, with the per-event columns that
+ * were read.
  *
- * Timestamps are UTC microseconds. Waveform samples are in physical units.
+ * Times are microseconds from the bundle's origin. A column the channel does not
+ * store, or the query did not ask for, is absent. Index `i` of every column is
+ * event `i`.
  */
-export interface EventBatch {
+export interface EventWindow {
   /** Channel id the events belong to. */
   readonly channel: string;
   /** Query-window start. */
   readonly startUs: number;
   /** Query-window end, exclusive. */
   readonly endUs: number;
-  /** Time between waveform samples. */
-  readonly samplePeriodUs: number;
-  /** Samples per spike waveform. 0 when waveforms were not fetched. */
-  readonly pointsPerEvent: number;
-  /** Always false: waveforms are returned as stored. */
-  readonly isResampled: boolean;
-  /** Timestamps of the events, ascending. */
+  /** Onset time of each event, ascending. */
   readonly times: Float64Array;
+  /** Duration of each event. 0 is a point event. */
+  readonly durations?: Float64Array;
+  /** Label value of each event, an index into the channel's `labelNames`. */
+  readonly labels?: Uint16Array;
+  /** One measurement per event, in the channel's unit. */
+  readonly values?: Float64Array;
+  /** Free text of each event. */
+  readonly text?: readonly string[];
+  /** Ids of the channels each event applies to. An empty list means the whole recording. */
+  readonly channels?: ReadonlyArray<readonly string[]>;
+  /** The events' snippets, when the channel stores them and the query asked for them. */
+  readonly waveforms?: Waveforms;
+}
+
+/** Per-bin event counts read from one count level of an event channel. */
+export interface EventCounts {
+  /** Channel id the counts belong to. */
+  readonly channel: string;
+  /** The count level read, numbered from 1. */
+  readonly level: number;
+  /** Start time of the first bin. */
+  readonly startUs: number;
+  /** Width of one bin. */
+  readonly periodUs: number;
+  /** Number of label categories: the values per bin. */
+  readonly labelCount: number;
   /**
-   * Waveform samples, one row of `pointsPerEvent` values per event, flattened
-   * row-major. Empty when waveforms were not fetched.
+   * Events in each bin per label category, `labelCount` values per bin, flattened
+   * row-major.
    */
-  readonly data: Float64Array;
+  readonly counts: Uint32Array;
+}
+
+/**
+ * The bundle's `recording.json`: identity and the wall-clock time of its origin.
+ *
+ * Every other time in a bundle counts from the origin. Each field is absent when
+ * the file omits it.
+ */
+export interface RecordingInfo {
+  /** The origin as written, an RFC 3339 timestamp. */
+  readonly start?: string;
+  /**
+   * The origin in microseconds since the Unix epoch. Add a bundle time to it for
+   * wall-clock time.
+   */
+  readonly startUs?: number;
+  readonly subject?: Readonly<Record<string, unknown>>;
+  readonly session?: Readonly<Record<string, unknown>>;
+  readonly source?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -145,3 +234,6 @@ export interface Store {
     opts?: StoreOptions,
   ): Promise<Uint8Array | undefined>;
 }
+
+/** Strips `readonly` so a result object can be filled in field by field. */
+export type Mutable<T> = { -readonly [K in keyof T]: T[K] };

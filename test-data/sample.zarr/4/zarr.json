@@ -1,0 +1,17 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "event",
+      "name": "Marks",
+      "id": "marks",
+      "label_names": [
+        "seizure",
+        "spike",
+        "note"
+      ],
+      "max_duration_us": 90000000
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

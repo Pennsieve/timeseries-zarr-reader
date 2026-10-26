@@ -1,8 +1,15 @@
 # API reference
 
-All timestamps and durations are UTC microseconds: `startUs`, `endUs`, `pixelWidthUs`,
-`samplePeriodUs`. Sample values stay in each channel's physical unit, as recorded. Time
-windows are half-open, `[startUs, endUs)`.
+All times are microseconds. Timestamps such as `startUs` and `endUs` count from the
+bundle's origin, its time zero, and [`recording()`](#recording) gives the origin's
+wall-clock time when the bundle records one. Durations such as `pixelWidthUs` and
+`samplePeriodUs` are plain spans. Sample values stay in each channel's physical unit, as
+recorded. Time windows are half-open, `[startUs, endUs)`.
+
+The reader implements TS-Zarr 1.x and rejects a bundle of any other major version,
+including the unversioned layout written before 1.0. Inside a 1.x bundle it ignores the
+attribute keys, arrays, and groups it does not recognize, so a bundle from a later minor
+release opens.
 
 ## `new StreamingClient(options)`
 
@@ -24,14 +31,40 @@ that decompresses chunks. The codec module carries its WebAssembly binary inline
 loading it early keeps that download off the first read.
 
 The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
-`UnitQueryOptions`, and `DataSpanOptions`.
+`EventQueryOptions`, `EventCountOptions`, `WaveformMeanOptions`, and `DataSpanOptions`.
 
 ## `channelInfo()`
 
-Returns a `ChannelInfo` array covering every channel in the bundle, with `id`, `name`,
-`unit`, `rateHz`, `startUs`, `endUs`, and `kind` (`"continuous"` or `"unit"`). `endUs`
-is exclusive, one period past the last sample. A unit channel reports `endUs` equal to
-`startUs`.
+Returns a `ChannelInfo` array covering every channel in the bundle, in the bundle's
+order. `ChannelInfo` is a union discriminated on `kind`:
+
+- `ContinuousChannelInfo` (`kind: "continuous"`): `key`, `id`, `name`, `unit`, `rateHz`,
+  `startUs`, `endUs`, and an optional `provenance`. `endUs` is exclusive, one period
+  past the last sample.
+- `EventChannelInfo` (`kind: "event"`): `key`, `id`, `name`, `eventCount`, `columns`
+  (the optional per-event columns the channel stores, from `durations`, `labels`,
+  `values`, `text`, `channels`, and `waveforms`), `hasWaveformMean`, `countLevels` (the
+  number of count levels, 0 when none), and optional `unit`, `labelNames`,
+  `maxDurationUs`, and `provenance`.
+
+`key` is the channel's group name in the bundle, a decimal integer. `id` is the
+producer's id when the bundle records one, and otherwise the key; it is what every
+query takes. Ids and keys therefore share one namespace: a bundle where two channels
+end up with the same id, including a producer id that matches another channel's key,
+is rejected when it is opened. `timeseries-zarr-py` writes an id on every channel and
+refuses duplicates, so its bundles are never rejected for this.
+
+## `recording()`
+
+Returns a promise for the bundle's `recording.json` as a `RecordingInfo`, or `undefined`
+when the bundle has none. The file is read once and cached for the client's lifetime.
+
+`start` is the origin's wall-clock time as written, an RFC 3339 timestamp, and
+`startUs` the same instant in microseconds since the Unix epoch. `subject`, `session`,
+and `source` are the producer-defined identity objects. Each is absent when the file
+omits it. A bundle de-identified by deleting `recording.json` resolves to `undefined`;
+one that keeps the file but strips its keys resolves to an empty record. The origin is
+also accepted under the key `reference_time`, which `timeseries-zarr-py` writes.
 
 ## `query(options)`
 
@@ -57,14 +90,15 @@ Passing both or neither throws. The rest of the options:
 - `maxRawBytes`: byte-cap override for this query.
 - `signal`: an `AbortSignal` that cancels in-flight reads.
 
-`query()` rejects unit channels. Read those with [`queryUnits()`](#queryunitsoptions).
+`query()` rejects event channels. Read those with [`queryEvents()`](#queryeventsoptions).
 
 ### Level selection
 
 The reader picks the coarsest pyramid level whose bins fit within one pixel, falling
 back to the finest level when none fits. Segments from a coarse level carry interleaved
-`[min, max, ...]` envelope pairs and set `isMinMax`; segments from the raw level carry
-samples.
+`[min, max, ...]` envelope pairs from the level's `minmax` member and set `isMinMax`;
+segments from the raw level carry samples. A level's `mean` and `var` members are not
+read.
 
 A montage, a filter, or `raw: true` forces a read of the raw level. Coarse levels are
 already decimated, so they cannot be filtered or differenced exactly.
@@ -140,8 +174,10 @@ overlapping no data yields a segment with empty `data` and a `startUs` clamped t
 nearest channel edge.
 
 A gap inside the window arrives as NaN values inside the one segment; `query()` never
-splits a trace into several segments. A resampled pixel bucket with no finite value
-comes back as a `[NaN, NaN]` pair, so gaps stay visible at every zoom.
+splits a trace into several segments. A chunk the producer omitted reads as NaN too,
+which is what the format defines for a span that was never recorded. A resampled pixel
+bucket with no finite value comes back as a `[NaN, NaN]` pair, so gaps stay visible at
+every zoom.
 
 `query()` is an async generator. Validation happens on the first iteration, not on the
 call, so wrap the `for await` loop in `try`/`catch` rather than the call itself. A
@@ -164,16 +200,67 @@ sample later. A continuation narrower than one sample returns empty data.
 `channelInfo()` reports each channel's sample rate, for callers that want windows landing
 on sample boundaries.
 
-## `queryUnits(options)`
+## `queryEvents(options)`
 
-Returns an async iterable of `EventBatch`, one per requested unit channel. Takes
-`channels`, `startUs`, `endUs`, `pixelWidthUs`, an optional `priority` (defaulting to
-`"viewport"`), and an optional `signal`.
+Returns an async iterable of `EventWindow`, one per requested event channel, in request
+order. Takes `channels`, `startUs`, `endUs`, an optional `pixelWidthUs`, an optional
+`columns`, an optional `priority` (defaulting to `"viewport"`), and an optional
+`signal`.
 
-Each batch holds ascending timestamps within the window. Waveform samples
-(`pointsPerEvent` values per event, row-major) are included only when the window holds
-events and one waveform spans more than 10 pixels. Otherwise `pointsPerEvent` is 0 and
-`data` is empty.
+An event is in the window when it starts before `endUs` and ends at or after `startUs`.
+A point event ends when it starts. An interval that opened before the window and is
+still running is included: the reader searches back from `startUs` by the channel's
+`maxDurationUs`, or from the channel's first event when it stores durations but
+declares no bound.
+
+Each window holds `times`, the events' onsets in ascending order, plus one entry per
+column read. Index `i` of every column is event `i`. The columns:
+
+- `durations`: `Float64Array` of microseconds. 0 is a point event.
+- `labels`: `Uint16Array` of label values, indexes into the channel's `labelNames`.
+- `values`: `Float64Array`, one measurement per event in the channel's `unit`.
+- `text`: one decoded string per event. Free text, or whatever the producer wrote, such
+  as a JSON object per detector hit.
+- `channels`: the ids of the channels each event applies to. An empty list means the
+  whole recording. The bundle stores channel keys; the reader resolves them to ids,
+  and returns a key that names no channel in the bundle as the key itself.
+- `waveforms`: a `Waveforms` record holding `pointsPerEvent`, `periodUs`,
+  `eventSample` (the snippet index recorded at the event time), and `data`, one row of
+  `pointsPerEvent` samples per event, flattened row-major.
+
+By default every column the channel stores is read. `columns` narrows the list; `text`
+can be most of a dense channel's bytes, so a raster view should leave it out. Waveforms
+are read only when the window holds events and, if `pixelWidthUs` is given, one snippet
+spans more than 10 pixels. Omit `pixelWidthUs` to read them whenever asked for.
+
+`queryEvents()` rejects continuous channels, an unknown id, a non-positive
+`pixelWidthUs`, and an `endUs` before `startUs`.
+
+## `eventCounts(options)`
+
+Returns a promise for the `EventCounts` of one event channel over a window: the per-bin
+event counts from the coarsest count level whose bins fit within one pixel, falling
+back to the finest. Takes `channel`, `startUs`, `endUs`, `pixelWidthUs`, an optional
+`priority` (defaulting to `"viewport"`), and an optional `signal`.
+
+The result holds `level` (numbered from 1), `startUs` (the start of the first bin),
+`periodUs`, `labelCount`, and `counts`, a `Uint32Array` of `labelCount` values per bin,
+flattened row-major: events in the bin per label category, in label order. Bins are
+delivered whole, so the first may start before `startUs` and the last run past `endUs`.
+An event with a duration is counted in the bin of its onset only.
+
+A producer writes count levels for dense channels, roughly above 64,000 events. A
+channel without them, which `channelInfo()` reports as `countLevels: 0`, rejects; read
+its events with `queryEvents()` instead. An unknown id, a continuous channel, a
+non-positive `pixelWidthUs`, and an `endUs` before `startUs` reject too.
+
+## `waveformMean(options)`
+
+Returns a promise for an event channel's mean waveform per label category as a
+`Waveforms` record, one row per label in label order, or `undefined` when the channel
+stores none. Takes `channel`, an optional `priority`, and an optional `signal`. A legend
+reads this one small array in place of every snippet in the channel. Rejects for an
+unknown id or a continuous channel.
 
 ## `dataSpans(options)`
 
@@ -182,8 +269,11 @@ clamped to the window. Takes `channel`, `startUs`, `endUs`, an optional `gapThre
 an optional `priority` (defaulting to `"background"`), and an optional `signal`.
 
 Spans come from the coarsest pyramid level, so their edges align to that level's bins.
-Gaps no wider than `gapThresholdUs` are bridged into one span. The default of 0 splits on
-every gap.
+A bin is populated when the level's `count` member is above zero, or, on a level
+without `count`, when its min/max is finite. The difference matters: one bad sample
+makes a bin's min/max NaN at every level above it, so without `count` that bin reads as
+a gap, and with it the bin reads as covered. Gaps no wider than `gapThresholdUs` are
+bridged into one span. The default of 0 splits on every gap.
 
 ## `openBundle(url)`
 
@@ -233,4 +323,6 @@ resolve to `undefined` for a missing key.
 
 A custom store must implement `getRange`, including the suffix form. Every array in a
 bundle is sharded, and reading a shard starts by reading its index from the end of the
-object.
+object. A missing key must resolve to `undefined` rather than reject: the format lets a
+producer omit a chunk whose values are all the fill value, and the reader then reads the
+gap as NaN.

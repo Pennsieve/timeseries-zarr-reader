@@ -1,11 +1,13 @@
 {
   "attributes": {
-    "id": "noise",
-    "rate_hz": 1000.0,
-    "start_us": 1704067200000000,
-    "kind": "continuous",
-    "name": "Noise",
-    "unit": "uV"
+    "tsz": {
+      "kind": "continuous",
+      "name": "Noise",
+      "id": "noise",
+      "rate_hz": 1000.0,
+      "offset_us": 0,
+      "unit": "uV"
+    }
   },
   "zarr_format": 3,
   "node_type": "group"

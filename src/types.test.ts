@@ -2,13 +2,18 @@ import { expect, expectTypeOf, test } from "vitest";
 import type {
   ByteRange,
   ChannelInfo,
-  EventBatch,
+  ContinuousChannelInfo,
+  EventChannelInfo,
+  EventCounts,
+  EventWindow,
   FilterSpec,
   MontagePair,
   ReadPriority,
+  RecordingInfo,
   Segment,
   Store,
   StoreOptions,
+  Waveforms,
 } from "./types.js";
 
 test("Segment has the documented shape", () => {
@@ -23,18 +28,38 @@ test("Segment has the documented shape", () => {
   expectTypeOf<Segment["isMinMax"]>().toBeBoolean();
 });
 
-test("ChannelInfo has the documented shape", () => {
-  const info: ChannelInfo = {
+test("ChannelInfo discriminates continuous and event channels on kind", () => {
+  const continuous: ChannelInfo = {
+    kind: "continuous",
+    key: "0",
     id: "ch1",
     name: "Fp1",
     unit: "uV",
     rateHz: 250,
     startUs: 0,
     endUs: 4_000_000,
-    kind: "continuous",
   };
-  expectTypeOf(info.rateHz).toBeNumber();
-  expectTypeOf<ChannelInfo["kind"]>().toEqualTypeOf<"continuous" | "unit">();
+  const event: ChannelInfo = {
+    kind: "event",
+    key: "1",
+    id: "marks",
+    name: "marks",
+    eventCount: 3,
+    columns: ["durations", "text"],
+    labelNames: ["onset"],
+    maxDurationUs: 60_000_000,
+    hasWaveformMean: false,
+    countLevels: 0,
+  };
+  if (continuous.kind === "continuous") {
+    expectTypeOf(continuous).toEqualTypeOf<ContinuousChannelInfo>();
+    expectTypeOf(continuous.rateHz).toBeNumber();
+  }
+  if (event.kind === "event") {
+    expectTypeOf(event).toEqualTypeOf<EventChannelInfo>();
+    expectTypeOf(event.eventCount).toBeNumber();
+  }
+  expectTypeOf<ChannelInfo["kind"]>().toEqualTypeOf<"continuous" | "event">();
 });
 
 test("MontagePair has the documented shape", () => {
@@ -64,19 +89,45 @@ test("FilterSpec discriminates cutoff fields by type", () => {
   >();
 });
 
-test("EventBatch has the documented shape", () => {
-  const ev: EventBatch = {
+test("EventWindow carries times plus optional columns", () => {
+  const waveforms: Waveforms = {
+    pointsPerEvent: 2,
+    periodUs: 40,
+    eventSample: 0,
+    data: new Float64Array([1, 2, 3, 4]),
+  };
+  const window: EventWindow = {
     channel: "unit-3",
     startUs: 0,
     endUs: 1_000_000,
-    samplePeriodUs: 40,
-    pointsPerEvent: 0,
-    isResampled: false,
     times: new Float64Array([1000, 2000]),
-    data: new Float64Array([]),
+    labels: new Uint16Array([0, 1]),
+    text: ["a", "b"],
+    channels: [["ch1"], []],
+    waveforms,
   };
-  expectTypeOf(ev.times).toEqualTypeOf<Float64Array>();
-  expectTypeOf(ev.data).toEqualTypeOf<Float64Array>();
+  expectTypeOf(window.times).toEqualTypeOf<Float64Array>();
+  expectTypeOf(window.durations).toEqualTypeOf<Float64Array | undefined>();
+  expectTypeOf(window.waveforms?.data).toEqualTypeOf<
+    Float64Array | undefined
+  >();
+});
+
+test("EventCounts and RecordingInfo have the documented shapes", () => {
+  const counts: EventCounts = {
+    channel: "unit-3",
+    level: 1,
+    startUs: 0,
+    periodUs: 256_000,
+    labelCount: 2,
+    counts: new Uint32Array([1, 0]),
+  };
+  expectTypeOf(counts.counts).toEqualTypeOf<Uint32Array>();
+  const recording: RecordingInfo = {
+    start: "1970-01-01T00:00:00Z",
+    startUs: 0,
+  };
+  expectTypeOf(recording.startUs).toEqualTypeOf<number | undefined>();
 });
 
 test("ReadPriority has the documented values", () => {

@@ -1,14 +1,20 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { createFilter } from "./filter.js";
-import type { BundleChannel } from "./test-utils.js";
+import type { FixtureChannel } from "./test-utils.js";
 import {
   bundleFiles,
   collect,
   createCountingStore,
   createMemoryStore,
 } from "./test-utils.js";
-import type { ChannelInfo, Store, StoreOptions } from "./types.js";
+import type {
+  ChannelInfo,
+  ContinuousChannelInfo,
+  EventChannelInfo,
+  Store,
+  StoreOptions,
+} from "./types.js";
 import { openBundle, RawReadTooLargeError, StreamingClient } from "./index.js";
 
 /** Collects an async iterable and asserts it yielded exactly one item. */
@@ -28,10 +34,24 @@ function pairsOf(samples: number[], block: number): number[] {
   return out;
 }
 
-function channelById(infos: readonly ChannelInfo[], id: string): ChannelInfo {
+function continuousById(
+  infos: readonly ChannelInfo[],
+  id: string,
+): ContinuousChannelInfo {
   const info = infos.find((candidate) => candidate.id === id);
-  if (!info) {
-    throw new Error(`bundle has no channel ${id}`);
+  if (info?.kind !== "continuous") {
+    throw new Error(`bundle has no continuous channel ${id}`);
+  }
+  return info;
+}
+
+function eventById(
+  infos: readonly ChannelInfo[],
+  id: string,
+): EventChannelInfo {
+  const info = infos.find((candidate) => candidate.id === id);
+  if (info?.kind !== "event") {
+    throw new Error(`bundle has no event channel ${id}`);
   }
   return info;
 }
@@ -70,18 +90,22 @@ function withHeldKeys(
   };
 }
 
-const attrs = (
+/**
+ * The `tsz` object of a continuous channel. Starts at 1 s unless `offsetUs` says
+ * otherwise.
+ */
+const tsz = (
   id: string,
   name: string,
   rateHz: number,
-  kind = "continuous",
+  offsetUs = 1_000_000,
 ) => ({
+  kind: "continuous",
   id,
   name,
   unit: "uV",
   rate_hz: rateHz,
-  start_us: 1_000_000,
-  kind,
+  offset_us: offsetUs,
 });
 
 const RAW_A = Array.from({ length: 32 }, (_, i) => i);
@@ -98,38 +122,34 @@ const FRACTIONAL = Array.from(
   ),
 );
 
-const CHANNELS: BundleChannel[] = [
+const CHANNELS: FixtureChannel[] = [
   {
-    path: "0",
-    attributes: attrs("a", "A", 1000),
+    key: "0",
+    tsz: tsz("a", "A", 1000),
+    raw: RAW_A,
+    levels: [{ periodUs: 4000, pairs: pairsOf(RAW_A, 4) }],
+  },
+  {
+    key: "1",
+    tsz: tsz("b", "B", 1000),
+    raw: RAW_B,
+    levels: [{ periodUs: 4000, pairs: pairsOf(RAW_B, 4) }],
+  },
+  {
+    key: "2",
+    tsz: tsz("c", "C", 500),
+    raw: new Array<number>(16).fill(0),
+  },
+  {
+    key: "3",
+    tsz: tsz("r", "R", 1000),
+    raw: [0, 10, 2, 8, 5, 5, 5, 5],
+  },
+  {
+    key: "4",
+    tsz: tsz("g", "G", 1000),
+    raw: new Array<number>(32).fill(0),
     levels: [
-      { periodUs: 1000, samples: RAW_A },
-      { periodUs: 4000, pairs: pairsOf(RAW_A, 4) },
-    ],
-  },
-  {
-    path: "1",
-    attributes: attrs("b", "B", 1000),
-    levels: [
-      { periodUs: 1000, samples: RAW_B },
-      { periodUs: 4000, pairs: pairsOf(RAW_B, 4) },
-    ],
-  },
-  {
-    path: "2",
-    attributes: attrs("c", "C", 500),
-    levels: [{ periodUs: 2000, samples: new Array<number>(16).fill(0) }],
-  },
-  {
-    path: "3",
-    attributes: attrs("r", "R", 1000),
-    levels: [{ periodUs: 1000, samples: [0, 10, 2, 8, 5, 5, 5, 5] }],
-  },
-  {
-    path: "4",
-    attributes: attrs("g", "G", 1000),
-    levels: [
-      { periodUs: 1000, samples: new Array<number>(32).fill(0) },
       {
         periodUs: 4000,
         pairs: [1, 2, NaN, NaN, 3, 4, 5, 6, NaN, NaN, NaN, NaN, 7, 8, 9, 10],
@@ -137,44 +157,90 @@ const CHANNELS: BundleChannel[] = [
     ],
   },
   {
-    path: "5",
-    attributes: attrs("u", "U", 10_000, "unit"),
+    key: "5",
+    tsz: { kind: "event", id: "u", name: "U", label_names: ["x", "y"] },
     events: [1_002_000, 1_005_000, 1_005_500, 1_009_000],
+    labels: [0, 1, 1, 0],
     waveforms: {
       periodUs: 100,
       pointsPerEvent: 3,
       samples: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     },
+    waveformMean: {
+      periodUs: 100,
+      pointsPerEvent: 3,
+      samples: [1, 2, 3, 4, 5, 6],
+    },
+    // 4 ms bins from 1 s: events land in bins 0, 1, 1, 2.
+    countLevels: [
+      {
+        periodUs: 4000,
+        offsetUs: 1_000_000,
+        labelCount: 2,
+        counts: [1, 0, 0, 2, 1, 0],
+      },
+      { periodUs: 16_000, offsetUs: 1_000_000, labelCount: 2, counts: [2, 2] },
+    ],
   },
   {
     // Same rate and grid as "a", but starting two samples later.
-    path: "6",
-    attributes: { ...attrs("d", "D", 1000), start_us: 1_002_000 },
+    key: "6",
+    tsz: tsz("d", "D", 1000, 1_002_000),
+    raw: Array.from({ length: 30 }, (_, i) => i + 200),
+  },
+  {
+    // Same rate as "a", offset half a period: no shared grid exists.
+    key: "7",
+    tsz: tsz("m", "M", 1000, 1_000_500),
+    raw: [0, 0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    // 512 Hz from a large offset: period_us is 1953.125, and startUs arithmetic
+    // rounds. No drift lands on an exact period.
+    key: "8",
+    tsz: tsz("f", "F", 512, 1_704_067_200_000_000),
+    raw: FRACTIONAL,
+  },
+  {
+    // The coarsest level has a count member: one bin is NaN but partly recorded,
+    // one is NaN and empty.
+    key: "9",
+    tsz: tsz("h", "H", 1000),
+    raw: new Array<number>(32).fill(0),
     levels: [
       {
-        periodUs: 1000,
-        samples: Array.from({ length: 30 }, (_, i) => i + 200),
+        periodUs: 4000,
+        pairs: [1, 2, NaN, NaN, NaN, NaN, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+        count: [4, 3, 0, 4, 4, 4, 4, 4],
       },
     ],
   },
   {
-    // Same rate as "a", offset half a period: no shared grid exists.
-    path: "7",
-    attributes: { ...attrs("m", "M", 1000), start_us: 1_000_500 },
-    levels: [{ periodUs: 1000, samples: [0, 0, 0, 0, 0, 0, 0, 0] }],
-  },
-  {
-    // 512 Hz from an epoch start: period_us is 1953.125, and startUs arithmetic
-    // rounds. No drift lands on an exact period.
-    path: "8",
-    attributes: { ...attrs("f", "F", 512), start_us: 1_704_067_200_000_000 },
-    levels: [{ periodUs: 1e6 / 512, samples: FRACTIONAL }],
+    // Marks: one 10 ms interval and two points, with text and channel scope.
+    key: "10",
+    tsz: {
+      kind: "event",
+      id: "k",
+      name: "K",
+      max_duration_us: 10_000,
+      label_names: ["long", "short"],
+    },
+    events: [1_000_000, 1_004_000, 1_020_000],
+    durations: [10_000, 0, 0],
+    labels: [0, 1, 1],
+    text: ["first", "", "last"],
+    channels: [[0], [], [0, 1]],
   },
 ];
 
+const RECORDING = {
+  start: "2024-01-01T00:00:00Z",
+  subject: { id: "sub-01" },
+};
+
 const makeClient = (maxRawBytes?: number) =>
   new StreamingClient({
-    store: createMemoryStore(bundleFiles(CHANNELS)),
+    store: createMemoryStore(bundleFiles(CHANNELS, { recording: RECORDING })),
     ...(maxRawBytes === undefined ? {} : { maxRawBytes }),
   });
 
@@ -221,8 +287,37 @@ describe("catalog", () => {
       "d",
       "m",
       "f",
+      "h",
+      "k",
     ]);
     expect(rootReads).toBe(1);
+  });
+
+  test("channelInfo describes continuous and event channels by kind", async () => {
+    const client = makeClient();
+    const infos = await client.channelInfo();
+
+    expect(continuousById(infos, "a")).toEqual({
+      kind: "continuous",
+      key: "0",
+      id: "a",
+      name: "A",
+      unit: "uV",
+      rateHz: 1000,
+      startUs: 1_000_000,
+      endUs: 1_032_000,
+    });
+    expect(eventById(infos, "u")).toEqual({
+      kind: "event",
+      key: "5",
+      id: "u",
+      name: "U",
+      eventCount: 4,
+      columns: ["labels", "waveforms"],
+      labelNames: ["x", "y"],
+      hasWaveformMean: true,
+      countLevels: 2,
+    });
   });
 
   test("retries the read after a transient failure", async () => {
@@ -241,15 +336,62 @@ describe("catalog", () => {
     const client = new StreamingClient({ store });
 
     await expect(client.channelInfo()).rejects.toThrow(/transient outage/);
-    expect((await client.channelInfo()).length).toBe(9);
+    expect((await client.channelInfo()).length).toBe(11);
   });
 
   test("channelInfo returns a fresh copy per call", async () => {
     const client = makeClient();
-    const first = channelById(await client.channelInfo(), "a");
-    const second = channelById(await client.channelInfo(), "a");
+    const first = continuousById(await client.channelInfo(), "a");
+    const second = continuousById(await client.channelInfo(), "a");
     expect(second).not.toBe(first);
     expect(second).toEqual(first);
+  });
+});
+
+describe("recording", () => {
+  test("reads recording.json once and caches it", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS, { recording: RECORDING })),
+    );
+    const client = new StreamingClient({ store: counting.store });
+
+    const recording = await client.recording();
+    await client.recording();
+
+    expect(recording).toEqual({
+      start: "2024-01-01T00:00:00Z",
+      startUs: 1_704_067_200_000_000,
+      subject: { id: "sub-01" },
+    });
+    expect(counting.reads.get("/recording.json")).toBe(1);
+  });
+
+  test("resolves undefined for a bundle with no recording.json", async () => {
+    const client = new StreamingClient({
+      store: createMemoryStore(bundleFiles(CHANNELS)),
+    });
+    await expect(client.recording()).resolves.toBeUndefined();
+  });
+
+  test("retries after a failed read", async () => {
+    const inner = createMemoryStore(
+      bundleFiles(CHANNELS, { recording: RECORDING }),
+    );
+    let failures = 1;
+    const store: Store = {
+      get: (key, opts) => {
+        if (key === "/recording.json" && failures > 0) {
+          failures -= 1;
+          return Promise.reject(new Error("transient outage"));
+        }
+        return inner.get(key, opts);
+      },
+      getRange: (key, range, opts) => inner.getRange(key, range, opts),
+    };
+    const client = new StreamingClient({ store });
+
+    await expect(client.recording()).rejects.toThrow(/transient outage/);
+    expect((await client.recording())?.startUs).toBe(1_704_067_200_000_000);
   });
 });
 
@@ -420,11 +562,11 @@ describe("query", () => {
     ).rejects.toThrow(/no channel with id nope/);
   });
 
-  test("rejects a unit channel", async () => {
+  test("rejects an event channel", async () => {
     const client = makeClient();
     await expect(
       collect(client.query({ channels: ["u"], ...FULL, pixelWidthUs: 1000 })),
-    ).rejects.toThrow(/unit channel/);
+    ).rejects.toThrow(/event channel; use queryEvents/);
   });
 
   test("rejects a pixel width that is not positive", async () => {
@@ -482,13 +624,13 @@ describe("query", () => {
   test("propagates a failed read's error", async () => {
     const store = withFailingKey(
       createMemoryStore(bundleFiles(CHANNELS)),
-      "/0/0/c/0",
+      "/0/raw/c/0",
     );
     const client = new StreamingClient({ store });
 
     await expect(
       collect(client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 })),
-    ).rejects.toThrow(/read of \/0\/0\/c\/0 failed/);
+    ).rejects.toThrow(/read of \/0\/raw\/c\/0 failed/);
   });
 
   test("produces no unhandled rejection when iteration stops early", async () => {
@@ -496,7 +638,7 @@ describe("query", () => {
     // rejection would fail the run.
     const store = withFailingKey(
       createMemoryStore(bundleFiles(CHANNELS)),
-      "/1/0/c/0",
+      "/1/raw/c/0",
     );
     const client = new StreamingClient({ store });
 
@@ -677,7 +819,7 @@ describe("filter", () => {
 
   test("filters continuously on a channel whose period is not a whole microsecond", async () => {
     const client = makeClient();
-    const info = channelById(await client.channelInfo(), "f");
+    const info = continuousById(await client.channelInfo(), "f");
     const periodUs = 1e6 / 512;
     const seam = info.startUs + 100.5 * periodUs;
     const chunked: number[] = [];
@@ -844,8 +986,8 @@ describe("reads a query does not finish", () => {
 
   test("cancels the other traces' reads when one read fails", async () => {
     const held = withHeldKeys(
-      withFailingKey(createMemoryStore(bundleFiles(CHANNELS)), "/1/0/c/0"),
-      new Set(["/2/0/c/0"]),
+      withFailingKey(createMemoryStore(bundleFiles(CHANNELS)), "/1/raw/c/0"),
+      new Set(["/2/raw/c/0"]),
     );
     const client = new StreamingClient({ store: held.store });
 
@@ -857,17 +999,17 @@ describe("reads a query does not finish", () => {
           pixelWidthUs: 1000,
         }),
       ),
-    ).rejects.toThrow("read of /1/0/c/0 failed");
+    ).rejects.toThrow("read of /1/raw/c/0 failed");
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const pending = held.signals.get("/2/0/c/0");
+    const pending = held.signals.get("/2/raw/c/0");
     expect(pending?.aborted).toBe(true);
   });
 
   test("cancels the remaining reads when the consumer stops iterating", async () => {
     const held = withHeldKeys(
       createMemoryStore(bundleFiles(CHANNELS)),
-      new Set(["/1/0/c/0", "/2/0/c/0"]),
+      new Set(["/1/raw/c/0", "/2/raw/c/0"]),
     );
     const client = new StreamingClient({ store: held.store });
 
@@ -890,7 +1032,7 @@ describe("reads a query does not finish", () => {
   test("leaves the reads running while the consumer is still iterating", async () => {
     const held = withHeldKeys(
       createMemoryStore(bundleFiles(CHANNELS)),
-      new Set(["/2/0/c/0"]),
+      new Set(["/2/raw/c/0"]),
     );
     const client = new StreamingClient({ store: held.store });
     const iterator = client
@@ -901,20 +1043,19 @@ describe("reads a query does not finish", () => {
     expect(first.done).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(held.signals.get("/2/0/c/0")?.aborted).toBe(false);
+    expect(held.signals.get("/2/raw/c/0")?.aborted).toBe(false);
     await iterator.return(undefined);
   });
 });
 
 describe("chunked levels", () => {
-  const chunked: BundleChannel[] = [
+  const chunked: FixtureChannel[] = [
     {
-      path: "0",
-      attributes: attrs("k", "K", 1000),
-      levels: [
-        { periodUs: 1000, samples: RAW_A, chunkLength: 8 },
-        { periodUs: 4000, pairs: pairsOf(RAW_A, 4), chunkLength: 3 },
-      ],
+      key: "0",
+      tsz: tsz("k", "K", 1000),
+      raw: RAW_A,
+      rawChunkLength: 8,
+      levels: [{ periodUs: 4000, pairs: pairsOf(RAW_A, 4), chunkLength: 3 }],
     },
   ];
 
@@ -945,11 +1086,11 @@ describe("chunked levels", () => {
   });
 });
 
-describe("queryUnits", () => {
-  test("reads events without waveforms when zoomed out", async () => {
+describe("queryEvents", () => {
+  test("reads events and labels without waveforms when zoomed out", async () => {
     const client = makeClient();
-    const event = await collectOne(
-      client.queryUnits({
+    const window = await collectOne(
+      client.queryEvents({
         channels: ["u"],
         startUs: 1_003_000,
         endUs: 1_009_000,
@@ -957,16 +1098,16 @@ describe("queryUnits", () => {
       }),
     );
 
-    expect(event.channel).toBe("u");
-    expect(Array.from(event.times)).toEqual([1_005_000, 1_005_500]);
-    expect(event.pointsPerEvent).toBe(0);
-    expect(event.data.length).toBe(0);
+    expect(window.channel).toBe("u");
+    expect(Array.from(window.times)).toEqual([1_005_000, 1_005_500]);
+    expect(Array.from(window.labels!)).toEqual([1, 1]);
+    expect(window.waveforms).toBeUndefined();
   });
 
   test("reads waveforms when zoomed in", async () => {
     const client = makeClient();
-    const event = await collectOne(
-      client.queryUnits({
+    const window = await collectOne(
+      client.queryEvents({
         channels: ["u"],
         startUs: 1_003_000,
         endUs: 1_009_000,
@@ -974,25 +1115,48 @@ describe("queryUnits", () => {
       }),
     );
 
-    expect(event.pointsPerEvent).toBe(3);
-    expect(Array.from(event.data)).toEqual([4, 5, 6, 7, 8, 9]);
+    expect(window.waveforms?.pointsPerEvent).toBe(3);
+    expect(Array.from(window.waveforms!.data)).toEqual([4, 5, 6, 7, 8, 9]);
+  });
+
+  test("yields one window per channel in request order", async () => {
+    const client = makeClient();
+    const windows = await collect(
+      client.queryEvents({
+        channels: ["k", "u"],
+        startUs: 0,
+        endUs: 2_000_000,
+      }),
+    );
+    expect(windows.map((window) => window.channel)).toEqual(["k", "u"]);
+    expect(windows[0]!.text).toEqual(["first", "", "last"]);
+    expect(windows[0]!.channels).toEqual([["a"], [], ["a", "b"]]);
+  });
+
+  test("includes an interval still open at the window start", async () => {
+    const client = makeClient();
+    const window = await collectOne(
+      client.queryEvents({
+        channels: ["k"],
+        startUs: 1_005_000,
+        endUs: 1_010_000,
+      }),
+    );
+    expect(Array.from(window.times)).toEqual([1_000_000]);
+    expect(Array.from(window.durations!)).toEqual([10_000]);
   });
 
   test("rejects a continuous channel", async () => {
     const client = makeClient();
     await expect(
-      collect(
-        client.queryUnits({ channels: ["a"], ...FULL, pixelWidthUs: 1000 }),
-      ),
-    ).rejects.toThrow(/not a unit channel/);
+      collect(client.queryEvents({ channels: ["a"], ...FULL })),
+    ).rejects.toThrow(/continuous channel; use query\(\)/);
   });
 
   test("rejects an unknown channel id", async () => {
     const client = makeClient();
     await expect(
-      collect(
-        client.queryUnits({ channels: ["nope"], ...FULL, pixelWidthUs: 1000 }),
-      ),
+      collect(client.queryEvents({ channels: ["nope"], ...FULL })),
     ).rejects.toThrow(/no channel with id nope/);
   });
 
@@ -1000,7 +1164,7 @@ describe("queryUnits", () => {
     const client = makeClient();
     await expect(
       collect(
-        client.queryUnits({
+        client.queryEvents({
           channels: ["u"],
           ...FULL,
           pixelWidthUs: Number.NaN,
@@ -1013,10 +1177,9 @@ describe("queryUnits", () => {
     const client = makeClient();
     await expect(
       collect(
-        client.queryUnits({
+        client.queryEvents({
           channels: ["u"],
           ...FULL,
-          pixelWidthUs: 1000,
           signal: AbortSignal.abort(),
         }),
       ),
@@ -1027,14 +1190,128 @@ describe("queryUnits", () => {
     const client = makeClient();
     await expect(
       collect(
-        client.queryUnits({
+        client.queryEvents({
           channels: ["u"],
           startUs: 1_010_000,
           endUs: 1_005_000,
-          pixelWidthUs: 1000,
         }),
       ),
     ).rejects.toThrow(RangeError);
+  });
+});
+
+describe("eventCounts", () => {
+  test("reads the coarsest count level that fits the pixel width", async () => {
+    const client = makeClient();
+    const counts = await client.eventCounts({
+      channel: "u",
+      startUs: 1_000_000,
+      endUs: 1_012_000,
+      pixelWidthUs: 5000,
+    });
+    expect(counts).toEqual({
+      channel: "u",
+      level: 1,
+      startUs: 1_000_000,
+      periodUs: 4000,
+      labelCount: 2,
+      counts: Uint32Array.from([1, 0, 0, 2, 1, 0]),
+    });
+  });
+
+  test("delivers whole bins around the window", async () => {
+    const client = makeClient();
+    const counts = await client.eventCounts({
+      channel: "u",
+      startUs: 1_005_000,
+      endUs: 1_006_000,
+      pixelWidthUs: 4000,
+    });
+    expect(counts.startUs).toBe(1_004_000);
+    expect(Array.from(counts.counts)).toEqual([0, 2]);
+  });
+
+  test("falls back to the finest count level at a narrow pixel width", async () => {
+    const client = makeClient();
+    const counts = await client.eventCounts({
+      channel: "u",
+      startUs: 1_000_000,
+      endUs: 1_016_000,
+      pixelWidthUs: 10,
+    });
+    expect(counts.level).toBe(1);
+    expect(counts.counts.length).toBe(6);
+  });
+
+  test("selects a coarser level when the pixel width allows", async () => {
+    const client = makeClient();
+    const counts = await client.eventCounts({
+      channel: "u",
+      startUs: 1_000_000,
+      endUs: 1_016_000,
+      pixelWidthUs: 20_000,
+    });
+    expect(counts.level).toBe(2);
+    expect(counts.periodUs).toBe(16_000);
+    expect(Array.from(counts.counts)).toEqual([2, 2]);
+  });
+
+  test("returns no bins for a window past the levels", async () => {
+    const client = makeClient();
+    const counts = await client.eventCounts({
+      channel: "u",
+      startUs: 5_000_000,
+      endUs: 6_000_000,
+      pixelWidthUs: 4000,
+    });
+    expect(counts.counts.length).toBe(0);
+  });
+
+  test("rejects a channel with no count levels, a continuous channel, and bad bounds", async () => {
+    const client = makeClient();
+    await expect(
+      client.eventCounts({ channel: "k", ...FULL, pixelWidthUs: 4000 }),
+    ).rejects.toThrow(/no count levels/);
+    await expect(
+      client.eventCounts({ channel: "a", ...FULL, pixelWidthUs: 4000 }),
+    ).rejects.toThrow(/continuous channel/);
+    await expect(
+      client.eventCounts({ channel: "u", ...FULL, pixelWidthUs: 0 }),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      client.eventCounts({
+        channel: "u",
+        startUs: 2,
+        endUs: 1,
+        pixelWidthUs: 4000,
+      }),
+    ).rejects.toThrow(RangeError);
+  });
+});
+
+describe("waveformMean", () => {
+  test("reads one mean snippet per label", async () => {
+    const client = makeClient();
+    await expect(client.waveformMean({ channel: "u" })).resolves.toEqual({
+      pointsPerEvent: 3,
+      periodUs: 100,
+      eventSample: 0,
+      data: Float64Array.from([1, 2, 3, 4, 5, 6]),
+    });
+  });
+
+  test("resolves undefined for a channel without one", async () => {
+    const client = makeClient();
+    await expect(
+      client.waveformMean({ channel: "k" }),
+    ).resolves.toBeUndefined();
+  });
+
+  test("rejects a continuous channel", async () => {
+    const client = makeClient();
+    await expect(client.waveformMean({ channel: "a" })).rejects.toThrow(
+      /continuous channel/,
+    );
   });
 });
 
@@ -1045,6 +1322,14 @@ describe("dataSpans", () => {
       [1_000_000, 1_004_000],
       [1_008_000, 1_016_000],
       [1_024_000, 1_032_000],
+    ]);
+  });
+
+  test("uses the level's count when it has one, so a partly recorded bin is covered", async () => {
+    const client = makeClient();
+    expect(await client.dataSpans({ channel: "h", ...FULL })).toEqual([
+      [1_000_000, 1_008_000],
+      [1_012_000, 1_032_000],
     ]);
   });
 
@@ -1102,10 +1387,10 @@ describe("dataSpans", () => {
     ).toEqual([[1_000_000, 1_008_000]]);
   });
 
-  test("rejects a unit channel", async () => {
+  test("rejects an event channel", async () => {
     const client = makeClient();
     await expect(client.dataSpans({ channel: "u", ...FULL })).rejects.toThrow(
-      /unit channel/,
+      /event channel/,
     );
   });
 
@@ -1208,12 +1493,10 @@ describe("in-flight cap", () => {
 
   test("yields every trace in order when there are more traces than the cap", async () => {
     const count = 130;
-    const many: BundleChannel[] = Array.from({ length: count }, (_, i) => ({
-      path: String(i),
-      attributes: attrs(`ch${i}`, `Channel ${i}`, 1000),
-      levels: [
-        { periodUs: 1000, samples: Array.from({ length: 8 }, (_, j) => i + j) },
-      ],
+    const many: FixtureChannel[] = Array.from({ length: count }, (_, i) => ({
+      key: String(i),
+      tsz: tsz(`ch${i}`, `Channel ${i}`, 1000),
+      raw: Array.from({ length: 8 }, (_, j) => i + j),
     }));
     const tracked = trackConcurrency(createMemoryStore(bundleFiles(many)));
     const client = new StreamingClient({
@@ -1223,7 +1506,7 @@ describe("in-flight cap", () => {
 
     const segments = await collect(
       client.query({
-        channels: many.map((channel) => channel.attributes.id as string),
+        channels: many.map((channel) => channel.tsz.id as string),
         ...FULL,
         pixelWidthUs: 1000,
       }),
@@ -1248,6 +1531,7 @@ describe("response cache", () => {
     await collect(
       client.query({ channels: ["a"], ...FULL, pixelWidthUs: 1000 }),
     );
+    await collect(client.queryEvents({ channels: ["k"], ...FULL }));
 
     const metadataKeys = [...counting.reads.keys()].filter((key) =>
       key.endsWith("zarr.json"),
@@ -1323,11 +1607,34 @@ const BUNDLE = fileURLToPath(
 const SINE_HZ = 5;
 const AMPLITUDE = 50;
 const RATE_HZ = 1000;
+const SPIKE_STEP_US = 137_000;
+const SPIKE_COUNT = 70_000;
 
 describe("acceptance: committed bundle", () => {
+  test("lists the channels with bundle-relative times and the recording's origin", async () => {
+    const client = new StreamingClient({ store: await openBundle(BUNDLE) });
+    const infos = await client.channelInfo();
+
+    expect(infos.map((info) => [info.key, info.id, info.kind])).toEqual([
+      ["0", "sineA", "continuous"],
+      ["1", "sineB", "continuous"],
+      ["2", "noise", "continuous"],
+      ["3", "unitA", "event"],
+      ["4", "marks", "event"],
+    ]);
+    const sineA = continuousById(infos, "sineA");
+    expect([sineA.startUs, sineA.endUs]).toEqual([0, 30_000_000]);
+    const sineB = continuousById(infos, "sineB");
+    expect([sineB.startUs, sineB.endUs]).toEqual([2_000_000, 32_000_000]);
+
+    const recording = await client.recording();
+    expect(recording?.startUs).toBe(1_704_067_200_000_000);
+    expect(recording?.subject).toEqual({ id: "sub-synth" });
+  });
+
   test("raw samples match the generating sine", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
-    const info = channelById(await client.channelInfo(), "sineA");
+    const info = continuousById(await client.channelInfo(), "sineA");
 
     const segment = await collectOne(
       client.query({
@@ -1350,7 +1657,7 @@ describe("acceptance: committed bundle", () => {
 
   test("a pyramid level equals min/max over the raw samples it summarizes", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
-    const info = channelById(await client.channelInfo(), "sineA");
+    const info = continuousById(await client.channelInfo(), "sineA");
     const window = { startUs: info.startUs, endUs: info.endUs };
 
     const pyramid = await collectOne(
@@ -1367,7 +1674,30 @@ describe("acceptance: committed bundle", () => {
 
     const expected = pairsOf(Array.from(raw.data), 64);
     expect(pyramid.isMinMax).toBe(true);
+    expect(pyramid.samplePeriodUs).toBe(64_000);
     expect(Array.from(pyramid.data)).toEqual(expected);
+  });
+
+  test("a montage across channels with different offsets reads their shared extent", async () => {
+    const client = new StreamingClient({ store: await openBundle(BUNDLE) });
+    const segment = await collectOne(
+      client.query({
+        montage: [{ lead: "sineA", secondary: "sineB" }],
+        startUs: 0,
+        endUs: 2_010_000,
+        pixelWidthUs: 1000,
+      }),
+    );
+
+    // sineB starts at 2 s, so the pair overlaps from there: a[2000..2010] - b[0..10].
+    expect(segment.startUs).toBe(2_000_000);
+    expect(segment.data.length).toBe(10);
+    Array.from(segment.data).forEach((value, i) => {
+      const a =
+        AMPLITUDE * Math.sin((2 * Math.PI * SINE_HZ * (2000 + i)) / RATE_HZ);
+      const b = 30 * Math.sin((2 * Math.PI * 8 * i) / RATE_HZ);
+      expect(value).toBeCloseTo(a - b, 3);
+    });
   });
 
   test("the pyramid path fetches less than a tenth of the raw bytes", async () => {
@@ -1385,7 +1715,7 @@ describe("acceptance: committed bundle", () => {
     const client = new StreamingClient({ store });
     // The incompressible channel: compression hides the sample-count ratio on
     // the sines.
-    const info = channelById(await client.channelInfo(), "noise");
+    const info = continuousById(await client.channelInfo(), "noise");
     const window = { startUs: info.startUs, endUs: info.endUs };
 
     bytes = 0;
@@ -1408,56 +1738,143 @@ describe("acceptance: committed bundle", () => {
     expect(pyramidBytes * 10).toBeLessThan(rawBytes);
   });
 
-  test("reads a real unit channel's events and waveforms", async () => {
+  test("data spans come from the coarsest level's count", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
-    const infos = await client.channelInfo();
-    const unitInfo = infos.find((info) => info.kind === "unit");
-    if (!unitInfo) {
-      throw new Error("bundle has no unit channel");
+    // The coarsest level has 64 ms bins and its last bin runs 16 ms past the data,
+    // so the span is clamped by the window rather than by the channel's end.
+    expect(
+      await client.dataSpans({
+        channel: "sineB",
+        startUs: 0,
+        endUs: 40_000_000,
+      }),
+    ).toEqual([[2_000_000, 32_016_000]]);
+    expect(
+      await client.dataSpans({
+        channel: "sineB",
+        startUs: 0,
+        endUs: 32_000_000,
+      }),
+    ).toEqual([[2_000_000, 32_000_000]]);
+  });
+
+  test("reads a sorted-units channel: events, labels, mean waveforms, and counts", async () => {
+    const client = new StreamingClient({ store: await openBundle(BUNDLE) });
+    const info = eventById(await client.channelInfo(), "unitA");
+    expect(info.eventCount).toBe(SPIKE_COUNT);
+    expect(info.columns).toEqual(["labels"]);
+    expect(info.labelNames).toEqual(["u0", "u1", "u2"]);
+    expect(info.hasWaveformMean).toBe(true);
+    expect(info.countLevels).toBeGreaterThanOrEqual(3);
+    expect(info.provenance).toEqual({ software: "generate-test-bundle.py" });
+
+    const window = { startUs: 1_000_000, endUs: 2_000_000 };
+    const expectedIndices = [7, 8, 9, 10, 11, 12, 13];
+    const events = await collectOne(
+      client.queryEvents({ channels: ["unitA"], ...window }),
+    );
+    expect(Array.from(events.times)).toEqual(
+      expectedIndices.map((i) => (i + 1) * SPIKE_STEP_US),
+    );
+    expect(Array.from(events.labels!)).toEqual(
+      expectedIndices.map((i) => i % 3),
+    );
+    expect(events.waveforms).toBeUndefined();
+
+    const mean = await client.waveformMean({ channel: "unitA" });
+    expect(mean?.pointsPerEvent).toBe(32);
+    expect(mean?.periodUs).toBeCloseTo(1e6 / 30_000, 9);
+    expect(mean?.data.length).toBe(3 * 32);
+    // Row j of the mean is j, j + 1, ..., j + 31.
+    expect(Array.from(mean!.data.slice(32, 64))).toEqual(
+      Array.from({ length: 32 }, (_, i) => i + 1),
+    );
+
+    // Count level 1 has 256 ms bins. Expected counts follow from the spike arithmetic.
+    const counts = await client.eventCounts({
+      channel: "unitA",
+      startUs: 0,
+      endUs: 2_560_000,
+      pixelWidthUs: 256_000,
+    });
+    expect(counts.level).toBe(1);
+    expect(counts.periodUs).toBe(256_000);
+    expect(counts.startUs).toBe(0);
+    expect(counts.labelCount).toBe(3);
+    const expected = new Uint32Array(10 * 3);
+    for (let i = 0; i < SPIKE_COUNT; i++) {
+      const bin = Math.floor(((i + 1) * SPIKE_STEP_US) / 256_000);
+      if (bin >= 10) break;
+      expected[bin * 3 + (i % 3)]! += 1;
     }
-    expect(unitInfo.endUs).toBe(unitInfo.startUs);
+    expect(Array.from(counts.counts)).toEqual(Array.from(expected));
 
-    const window = {
-      startUs: unitInfo.startUs + 1_000_000,
-      endUs: unitInfo.startUs + 2_000_000,
-    };
-    const expectedTimes = [8, 9, 10, 11, 12, 13, 14].map(
-      (n) => unitInfo.startUs + n * 137_000,
-    );
+    // A coarser level sums its children exactly.
+    const coarse = await client.eventCounts({
+      channel: "unitA",
+      startUs: 0,
+      endUs: 2_560_000,
+      pixelWidthUs: 1_024_000,
+    });
+    expect(coarse.level).toBe(2);
+    expect(coarse.counts.length).toBe(3 * 3);
+    for (let label = 0; label < 3; label++) {
+      let fine = 0;
+      for (let bin = 0; bin < 4; bin++) fine += expected[bin * 3 + label]!;
+      expect(coarse.counts[label]).toBe(fine);
+    }
+  });
 
-    // Zoomed out: events only.
-    const marks = await collectOne(
-      client.queryUnits({
-        channels: [unitInfo.id],
-        ...window,
-        pixelWidthUs: 1000,
+  test("reads clinical marks: open intervals, text, and channel scope", async () => {
+    const client = new StreamingClient({ store: await openBundle(BUNDLE) });
+    const info = eventById(await client.channelInfo(), "marks");
+    expect(info.columns).toEqual(["durations", "labels", "text", "channels"]);
+    expect(info.maxDurationUs).toBe(90_000_000);
+
+    // The seizure runs 10 s to 100 s. A window at 50 s holds it and nothing else.
+    const during = await collectOne(
+      client.queryEvents({
+        channels: ["marks"],
+        startUs: 50_000_000,
+        endUs: 60_000_000,
       }),
     );
-    expect(Array.from(marks.times)).toEqual(expectedTimes);
-    expect(marks.pointsPerEvent).toBe(0);
-    expect(marks.data.length).toBe(0);
+    expect(Array.from(during.times)).toEqual([10_000_000]);
+    expect(Array.from(during.durations!)).toEqual([90_000_000]);
+    expect(during.text).toEqual(["seizure"]);
+    expect(during.channels).toEqual([["sineA"]]);
 
-    // Zoomed in: a 32-point waveform at 30 kHz spans ~1067 us, > 10 pixels of 50 us.
-    const shapes = await collectOne(
-      client.queryUnits({
-        channels: [unitInfo.id],
-        ...window,
-        pixelWidthUs: 50,
+    const early = await collectOne(
+      client.queryEvents({
+        channels: ["marks"],
+        startUs: 11_000_000,
+        endUs: 26_000_000,
       }),
     );
-    expect(shapes.pointsPerEvent).toBe(32);
-    expect(shapes.samplePeriodUs).toBeCloseTo(1e6 / 30_000, 9);
-    expect(shapes.data.length).toBe(7 * 32);
-    // The first fetched row is event index 7, whose ramp starts at 7.
-    expect(Array.from(shapes.data.slice(0, 32))).toEqual(
-      Array.from({ length: 32 }, (_, i) => i + 7),
-    );
+    expect(Array.from(early.times)).toEqual([
+      10_000_000, 12_000_000, 15_500_000, 20_000_000, 25_000_000,
+    ]);
+    expect(Array.from(early.labels!)).toEqual([0, 1, 1, 2, 1]);
+    expect(early.text).toEqual([
+      "seizure",
+      "spike",
+      "spike",
+      "note: reviewed",
+      "spike",
+    ]);
+    expect(early.channels).toEqual([
+      ["sineA"],
+      ["sineA"],
+      ["sineB"],
+      [],
+      ["sineA", "sineB"],
+    ]);
   });
 
   test("the filter path equals the filter module applied to the raw read", async () => {
     const spec = { type: "lowpass", order: 4, cutoffHz: 40 } as const;
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
-    const info = channelById(await client.channelInfo(), "sineA");
+    const info = continuousById(await client.channelInfo(), "sineA");
     const window = {
       startUs: info.startUs,
       endUs: info.startUs + 10_000_000,
