@@ -214,6 +214,56 @@ export interface TimestampReader {
 /** The largest int64 magnitude that converts exactly to a number. */
 const MAX_SAFE_TIMESTAMP = BigInt(Number.MAX_SAFE_INTEGER);
 
+/** Converts a stored int64 to a number. Throws a RangeError past the safe range. */
+function toSafeNumber(value: bigint, path: `/${string}`): number {
+  if (value > MAX_SAFE_TIMESTAMP || value < -MAX_SAFE_TIMESTAMP) {
+    throw new RangeError(
+      `timestamp ${value} in ${path} does not fit a safe integer`,
+    );
+  }
+  return Number(value);
+}
+
+/**
+ * Reads whole rows of a rank-2 int64 array over a half-open row range, flattened
+ * row-major as numbers.
+ *
+ * Every value must fit a safe integer, as the format requires of its times, or the
+ * read throws a RangeError. An empty range returns empty data and the row length.
+ *
+ * Throws when no array exists at `path` or it is not rank-2 int64.
+ */
+export async function readInt64Rows(
+  store: Store,
+  path: `/${string}`,
+  range: { start: number; end: number },
+  opts?: StoreOptions,
+): Promise<{ data: Float64Array; rowLength: number }> {
+  const array = await openArray(store, path, opts);
+  if (array.shape.length !== 2 || !array.is("int64")) {
+    throw new Error(
+      `row array ${path} must be rank-2 int64 (got ${array.dtype} ${JSON.stringify(array.shape)})`,
+    );
+  }
+  const rowLength = array.shape[1]!;
+  if (range.end <= range.start) {
+    return { data: new Float64Array(0), rowLength };
+  }
+  const region = await get(array, [slice(range.start, range.end), null], opts);
+  const rows = region.shape[0]!;
+  const [rowStride, colStride] = region.stride as [number, number];
+  const out = new Float64Array(rows * rowLength);
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < rowLength; col++) {
+      out[row * rowLength + col] = toSafeNumber(
+        region.data[row * rowStride + col * colStride]!,
+        path,
+      );
+    }
+  }
+  return { data: out, rowLength };
+}
+
 /**
  * Opens a timestamp array for reading.
  *
@@ -245,13 +295,7 @@ export async function openTimestamps(
       const values = region.data;
       const out = new Float64Array(values.length);
       for (let i = 0; i < values.length; i++) {
-        const value = values[i]!;
-        if (value > MAX_SAFE_TIMESTAMP || value < -MAX_SAFE_TIMESTAMP) {
-          throw new RangeError(
-            `timestamp ${value} in ${path} does not fit a safe integer`,
-          );
-        }
-        out[i] = Number(value);
+        out[i] = toSafeNumber(values[i]!, path);
       }
       return out;
     },

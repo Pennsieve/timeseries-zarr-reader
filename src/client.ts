@@ -20,6 +20,7 @@ import { assertFilterSpec, createFilterSession } from "./filter.js";
 import { montageChannelKey, subtract } from "./montage.js";
 import { readRecording } from "./recording.js";
 import { resampleToPixels } from "./resample.js";
+import { readRuns } from "./runs.js";
 import {
   createCachingStore,
   createCoalescingStore,
@@ -36,6 +37,7 @@ import type {
   MontagePair,
   ReadPriority,
   RecordingInfo,
+  Run,
   Segment,
   Store,
   StoreOptions,
@@ -173,6 +175,16 @@ export interface WaveformMeanOptions {
   readonly signal?: AbortSignal;
 }
 
+/** Options for reading a continuous channel's runs. */
+export interface RunOptions {
+  readonly channel: string;
+  /**
+   * How early this read is admitted. Defaults to `"viewport"`.
+   */
+  readonly priority?: ReadPriority;
+  readonly signal?: AbortSignal;
+}
+
 /** Options for a data-availability query over one channel. */
 export interface DataSpanOptions {
   readonly channel: string;
@@ -259,6 +271,8 @@ export class StreamingClient {
   readonly #filters: FilterSession;
   #bundle: Promise<Bundle> | undefined;
   #recording: Promise<RecordingInfo | undefined> | undefined;
+  /** Each channel's runs, read once per client lifetime. */
+  readonly #runs = new Map<string, Promise<Run[]>>();
 
   constructor(options: StreamingClientOptions) {
     this.#store = options.store;
@@ -294,6 +308,37 @@ export class StreamingClient {
         this.#recording = undefined;
         throw error;
       }));
+  }
+
+  /**
+   * Returns a continuous channel's runs in time order: the exact start and end of
+   * every span of samples recorded one period apart.
+   *
+   * A channel that never paused has one run covering its extent, and an empty channel
+   * has none. Reads are placed on the sample grid, so a sample after a pause can sit
+   * up to one period from its exact time; this is where the exact times live. Read
+   * once per channel and cached for the client's lifetime. Rejects for an unknown
+   * channel id, an event channel, or a `runs` table that breaks the format's rules;
+   * the next call retries.
+   */
+  async runs(params: RunOptions): Promise<Run[]> {
+    params.signal?.throwIfAborted();
+    let pending = this.#runs.get(params.channel);
+    if (pending === undefined) {
+      pending = this.#loadBundle()
+        .then(({ catalog, store }) => {
+          const entry = continuousEntry(catalog, params.channel);
+          return this.#limit(params.priority ?? "viewport", () =>
+            readRuns(store, entry, toStoreOptions(params.signal)),
+          );
+        })
+        .catch((error: unknown) => {
+          this.#runs.delete(params.channel);
+          throw error;
+        });
+      this.#runs.set(params.channel, pending);
+    }
+    return pending;
   }
 
   /**
@@ -446,7 +491,7 @@ export class StreamingClient {
           store,
           id,
           entry.arrays,
-          catalog.idByKey,
+          catalog.idByIndex,
           params,
           opts,
         ),

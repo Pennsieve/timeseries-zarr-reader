@@ -1,15 +1,13 @@
 {
   "shape": [
-    2342,
-    3
+    344
   ],
   "data_type": "uint32",
   "chunk_grid": {
     "name": "regular",
     "configuration": {
       "chunk_shape": [
-        2342,
-        3
+        344
       ]
     }
   },
@@ -25,8 +23,7 @@
       "name": "sharding_indexed",
       "configuration": {
         "chunk_shape": [
-          2342,
-          3
+          344
         ],
         "codecs": [
           {
@@ -60,8 +57,7 @@
   ],
   "attributes": {},
   "dimension_names": [
-    "time",
-    null
+    "time"
   ],
   "zarr_format": 3,
   "node_type": "array",

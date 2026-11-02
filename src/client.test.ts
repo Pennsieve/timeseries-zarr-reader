@@ -124,29 +124,29 @@ const FRACTIONAL = Array.from(
 
 const CHANNELS: FixtureChannel[] = [
   {
-    key: "0",
+    index: 0,
     tsz: tsz("a", "A", 1000),
     raw: RAW_A,
     levels: [{ periodUs: 4000, pairs: pairsOf(RAW_A, 4) }],
   },
   {
-    key: "1",
+    index: 1,
     tsz: tsz("b", "B", 1000),
     raw: RAW_B,
     levels: [{ periodUs: 4000, pairs: pairsOf(RAW_B, 4) }],
   },
   {
-    key: "2",
+    index: 2,
     tsz: tsz("c", "C", 500),
     raw: new Array<number>(16).fill(0),
   },
   {
-    key: "3",
+    index: 3,
     tsz: tsz("r", "R", 1000),
     raw: [0, 10, 2, 8, 5, 5, 5, 5],
   },
   {
-    key: "4",
+    index: 4,
     tsz: tsz("g", "G", 1000),
     raw: new Array<number>(32).fill(0),
     levels: [
@@ -157,7 +157,7 @@ const CHANNELS: FixtureChannel[] = [
     ],
   },
   {
-    key: "5",
+    index: 5,
     tsz: { kind: "event", id: "u", name: "U", label_names: ["x", "y"] },
     events: [1_002_000, 1_005_000, 1_005_500, 1_009_000],
     labels: [0, 1, 1, 0],
@@ -184,27 +184,27 @@ const CHANNELS: FixtureChannel[] = [
   },
   {
     // Same rate and grid as "a", but starting two samples later.
-    key: "6",
+    index: 6,
     tsz: tsz("d", "D", 1000, 1_002_000),
     raw: Array.from({ length: 30 }, (_, i) => i + 200),
   },
   {
     // Same rate as "a", offset half a period: no shared grid exists.
-    key: "7",
+    index: 7,
     tsz: tsz("m", "M", 1000, 1_000_500),
     raw: [0, 0, 0, 0, 0, 0, 0, 0],
   },
   {
     // 512 Hz from a large offset: period_us is 1953.125, and startUs arithmetic
     // rounds. No drift lands on an exact period.
-    key: "8",
+    index: 8,
     tsz: tsz("f", "F", 512, 1_704_067_200_000_000),
     raw: FRACTIONAL,
   },
   {
     // The coarsest level has a count member: one bin is NaN but partly recorded,
     // one is NaN and empty.
-    key: "9",
+    index: 9,
     tsz: tsz("h", "H", 1000),
     raw: new Array<number>(32).fill(0),
     levels: [
@@ -217,7 +217,7 @@ const CHANNELS: FixtureChannel[] = [
   },
   {
     // Marks: one 10 ms interval and two points, with text and channel scope.
-    key: "10",
+    index: 10,
     tsz: {
       kind: "event",
       id: "k",
@@ -234,7 +234,7 @@ const CHANNELS: FixtureChannel[] = [
 ];
 
 const RECORDING = {
-  start: "2024-01-01T00:00:00Z",
+  reference_time: "2024-01-01T00:00:00Z",
   subject: { id: "sub-01" },
 };
 
@@ -299,17 +299,18 @@ describe("catalog", () => {
 
     expect(continuousById(infos, "a")).toEqual({
       kind: "continuous",
-      key: "0",
+      index: 0,
       id: "a",
       name: "A",
       unit: "uV",
       rateHz: 1000,
       startUs: 1_000_000,
       endUs: 1_032_000,
+      runs: 1,
     });
     expect(eventById(infos, "u")).toEqual({
       kind: "event",
-      key: "5",
+      index: 5,
       id: "u",
       name: "U",
       eventCount: 4,
@@ -359,8 +360,8 @@ describe("recording", () => {
     await client.recording();
 
     expect(recording).toEqual({
-      start: "2024-01-01T00:00:00Z",
-      startUs: 1_704_067_200_000_000,
+      referenceTime: "2024-01-01T00:00:00Z",
+      referenceTimeUs: 1_704_067_200_000_000,
       subject: { id: "sub-01" },
     });
     expect(counting.reads.get("/recording.json")).toBe(1);
@@ -391,7 +392,9 @@ describe("recording", () => {
     const client = new StreamingClient({ store });
 
     await expect(client.recording()).rejects.toThrow(/transient outage/);
-    expect((await client.recording())?.startUs).toBe(1_704_067_200_000_000);
+    expect((await client.recording())?.referenceTimeUs).toBe(
+      1_704_067_200_000_000,
+    );
   });
 });
 
@@ -1051,7 +1054,7 @@ describe("reads a query does not finish", () => {
 describe("chunked levels", () => {
   const chunked: FixtureChannel[] = [
     {
-      key: "0",
+      index: 0,
       tsz: tsz("k", "K", 1000),
       raw: RAW_A,
       rawChunkLength: 8,
@@ -1494,7 +1497,7 @@ describe("in-flight cap", () => {
   test("yields every trace in order when there are more traces than the cap", async () => {
     const count = 130;
     const many: FixtureChannel[] = Array.from({ length: count }, (_, i) => ({
-      key: String(i),
+      index: i,
       tsz: tsz(`ch${i}`, `Channel ${i}`, 1000),
       raw: Array.from({ length: 8 }, (_, j) => i + j),
     }));
@@ -1610,17 +1613,132 @@ const RATE_HZ = 1000;
 const SPIKE_STEP_US = 137_000;
 const SPIKE_COUNT = 70_000;
 
+describe("runs", () => {
+  const tszOf = (id: string) => ({
+    kind: "continuous",
+    name: id,
+    id,
+    unit: "uV",
+    rate_hz: 1000,
+    offset_us: 1_000_000,
+  });
+  const TEN = Array.from({ length: 10 }, (_, i) => i);
+  // Four samples, a pause of two grid samples, four more starting 0.4 periods late.
+  const PAUSED: FixtureChannel = {
+    index: 0,
+    tsz: tszOf("p"),
+    raw: TEN,
+    runs: [
+      [0, 4, 1_000_000],
+      [6, 4, 1_006_400],
+    ],
+  };
+  const PLAIN: FixtureChannel = { index: 1, tsz: tszOf("q"), raw: [1, 2, 3] };
+  const EMPTY: FixtureChannel = { index: 2, tsz: tszOf("e"), raw: [] };
+  const EVENTS: FixtureChannel = {
+    index: 3,
+    tsz: { kind: "event", name: "E", id: "ev" },
+    events: [1],
+  };
+  const makeClient = (channels: FixtureChannel[]) =>
+    new StreamingClient({ store: createMemoryStore(bundleFiles(channels)) });
+
+  test("reads the table with the exact start and end of each run", async () => {
+    const client = makeClient([PAUSED, PLAIN, EMPTY, EVENTS]);
+
+    expect(await client.runs({ channel: "p" })).toEqual([
+      { firstSample: 0, sampleCount: 4, startUs: 1_000_000, endUs: 1_004_000 },
+      { firstSample: 6, sampleCount: 4, startUs: 1_006_400, endUs: 1_010_400 },
+    ]);
+    // The channel's own extent stays on the grid.
+    const info = continuousById(await client.channelInfo(), "p");
+    expect([info.runs, info.startUs, info.endUs]).toEqual([
+      2, 1_000_000, 1_010_000,
+    ]);
+  });
+
+  test("synthesizes one run without a table, and none for an empty channel", async () => {
+    const client = makeClient([PAUSED, PLAIN, EMPTY, EVENTS]);
+    expect(await client.runs({ channel: "q" })).toEqual([
+      { firstSample: 0, sampleCount: 3, startUs: 1_000_000, endUs: 1_003_000 },
+    ]);
+    expect(await client.runs({ channel: "e" })).toEqual([]);
+  });
+
+  test("reads the table once per channel", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles([PAUSED, PLAIN, EMPTY, EVENTS])),
+    );
+    const client = new StreamingClient({ store: counting.store });
+    await client.runs({ channel: "p" });
+    await client.runs({ channel: "p" });
+    expect(counting.reads.get("/0/runs/c/0/0")).toBe(1);
+  });
+
+  test("rejects a table that breaks the format's rules, then retries", async () => {
+    const broken: Array<[number[][], RegExp]> = [
+      // Row 0 must start the channel at offset_us.
+      [[[0, 10, 1_000_500]], /row 0 .* must be \[0, n, 1000000\]/],
+      // A run cannot start inside the one before it.
+      [
+        [
+          [0, 4, 1_000_000],
+          [3, 7, 1_003_000],
+        ],
+        /row 1 .* overlaps the run before it, which ends at sample 4/,
+      ],
+      // A run cannot start before the samples of the one before it end.
+      [
+        [
+          [0, 4, 1_000_000],
+          [4, 6, 1_003_500],
+        ],
+        /row 1 .* starts before the run before it ends at 1004000 us/,
+      ],
+      // A run starts within one sample period of its grid sample.
+      [
+        [
+          [0, 4, 1_000_000],
+          [6, 4, 1_005_000],
+        ],
+        /row 1 .* starts -1000 us from its grid sample/,
+      ],
+      // The last run ends at the last sample.
+      [[[0, 9, 1_000_000]], /runs end at sample 9 but raw holds 10 samples/],
+    ];
+    for (const [runs, message] of broken) {
+      const client = makeClient([{ ...PAUSED, runs }]);
+      await expect(client.runs({ channel: "p" })).rejects.toThrow(message);
+      await expect(client.runs({ channel: "p" })).rejects.toThrow(message);
+    }
+  });
+
+  test("rejects an event channel, an unknown id, and an aborted signal", async () => {
+    const client = makeClient([PAUSED, PLAIN, EMPTY, EVENTS]);
+    await expect(client.runs({ channel: "ev" })).rejects.toThrow(
+      /is an event channel/,
+    );
+    await expect(client.runs({ channel: "nope" })).rejects.toThrow(
+      /no channel with id nope/,
+    );
+    await expect(
+      client.runs({ channel: "p", signal: AbortSignal.abort() }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("acceptance: committed bundle", () => {
   test("lists the channels with bundle-relative times and the recording's origin", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
     const infos = await client.channelInfo();
 
-    expect(infos.map((info) => [info.key, info.id, info.kind])).toEqual([
-      ["0", "sineA", "continuous"],
-      ["1", "sineB", "continuous"],
-      ["2", "noise", "continuous"],
-      ["3", "unitA", "event"],
-      ["4", "marks", "event"],
+    expect(infos.map((info) => [info.index, info.id, info.kind])).toEqual([
+      [0, "sineA", "continuous"],
+      [1, "sineB", "continuous"],
+      [2, "noise", "continuous"],
+      [3, "pausedA", "continuous"],
+      [4, "unitA", "event"],
+      [5, "marks", "event"],
     ]);
     const sineA = continuousById(infos, "sineA");
     expect([sineA.startUs, sineA.endUs]).toEqual([0, 30_000_000]);
@@ -1628,7 +1746,7 @@ describe("acceptance: committed bundle", () => {
     expect([sineB.startUs, sineB.endUs]).toEqual([2_000_000, 32_000_000]);
 
     const recording = await client.recording();
-    expect(recording?.startUs).toBe(1_704_067_200_000_000);
+    expect(recording?.referenceTimeUs).toBe(1_704_067_200_000_000);
     expect(recording?.subject).toEqual({ id: "sub-synth" });
   });
 
@@ -1868,6 +1986,52 @@ describe("acceptance: committed bundle", () => {
       ["sineB"],
       [],
       ["sineA", "sineB"],
+    ]);
+  });
+
+  test("reads a paused channel: exact runs, NaN on the grid between them", async () => {
+    const client = new StreamingClient({ store: await openBundle(BUNDLE) });
+    const info = continuousById(await client.channelInfo(), "pausedA");
+    expect([info.runs, info.startUs, info.endUs]).toEqual([2, 0, 22_000_000]);
+
+    // The second run resumed 0.4 ms past grid sample 12,000, which the grid cannot
+    // say and the table does.
+    expect(await client.runs({ channel: "pausedA" })).toEqual([
+      { firstSample: 0, sampleCount: 10_000, startUs: 0, endUs: 10_000_000 },
+      {
+        firstSample: 12_000,
+        sampleCount: 10_000,
+        startUs: 12_000_400,
+        endUs: 22_000_400,
+      },
+    ]);
+
+    // Raw samples across the pause: the grid holds NaN where nothing was recorded.
+    const segment = await collectOne(
+      client.query({
+        channels: ["pausedA"],
+        startUs: 9_999_000,
+        endUs: 12_002_000,
+        pixelWidthUs: 1000,
+        raw: true,
+      }),
+    );
+    const data = Array.from(segment.data);
+    expect([segment.startUs, data.length]).toEqual([9_999_000, 2003]);
+    expect(Number.isFinite(data[0]) && Number.isFinite(data[2001])).toBe(true);
+    expect(data.slice(1, 2001).every(Number.isNaN)).toBe(true);
+
+    // The coarsest level has 64 ms bins. The pause empties the bins inside it, and
+    // the two bins straddling its edges keep the samples they recorded.
+    expect(
+      await client.dataSpans({
+        channel: "pausedA",
+        startUs: 0,
+        endUs: 22_000_000,
+      }),
+    ).toEqual([
+      [0, 10_048_000],
+      [11_968_000, 22_000_000],
     ]);
   });
 

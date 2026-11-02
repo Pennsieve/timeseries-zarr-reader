@@ -1,8 +1,7 @@
 {
   "attributes": {
     "tsz": {
-      "period_us": 4096000.0,
-      "offset_us": 0
+      "period_us": 64000.0
     }
   },
   "zarr_format": 3,

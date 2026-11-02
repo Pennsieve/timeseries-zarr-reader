@@ -2,14 +2,16 @@
   "attributes": {
     "tsz": {
       "kind": "event",
-      "name": "Marks",
-      "id": "marks",
+      "name": "Unit A",
+      "id": "unitA",
       "label_names": [
-        "seizure",
-        "spike",
-        "note"
+        "u0",
+        "u1",
+        "u2"
       ],
-      "max_duration_us": 90000000
+      "provenance": {
+        "software": "generate-test-bundle.py"
+      }
     }
   },
   "zarr_format": 3,

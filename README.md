@@ -10,7 +10,7 @@ filtering, and event reads all run client-side. A server only has to serve bytes
 HTTP `Range` support.
 
 The bundle format is the
-[TS-Zarr 1.0 specification](https://github.com/Pennsieve/timeseries-zarr-paper/blob/main/bundle-format.md),
+[TS-Zarr 1.0 specification](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md),
 published in `timeseries-zarr-paper`. The reference producer is
 [`timeseries-zarr-py`](https://github.com/Pennsieve/timeseries-zarr-py). This reader
 implements specification version 1.x and rejects a bundle of any other major version,
@@ -99,9 +99,12 @@ pnpm format:check  # prettier --check (read-only)
 Tests sit beside the module they cover, as `src/<module>.test.ts`. The acceptance tests
 read `test-data/sample.zarr`, a small bundle committed to the repository;
 `scripts/generate-test-bundle.py` documents its contents and rewrites it with
-`timeseries-zarr-py`. `src/reference-bundle.test.ts` also reads the specification's
-reference bundle from a `timeseries-zarr-paper` checkout beside this one, or from
-`TSZ_REFERENCE_BUNDLE`, and is skipped when neither exists.
+`timeseries-zarr-py`. `src/conformance.test.ts` reads the specification's conformance
+fixtures, which `make fixtures` builds in a `timeseries-zarr-py` checkout beside this
+one (or at `TSZ_CONFORMANCE_DIR`), and checks the reader against their manifest.
+`src/reference-bundle.test.ts` reads the paper's reference bundle from a
+`timeseries-zarr-paper` checkout beside this one, or from `TSZ_REFERENCE_BUNDLE`. Both
+are skipped when their bundles are not on disk.
 
 ## License
 

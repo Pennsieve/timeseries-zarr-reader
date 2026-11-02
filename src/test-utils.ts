@@ -228,14 +228,16 @@ export interface FixtureLevel {
 
 /** One continuous channel of a fixture bundle. */
 export interface FixtureContinuous {
-  /** The channel key: the name of its group. */
-  key: string;
+  /** The channel index: the integer name of its group. */
+  index: number;
   /** The channel group's `tsz` object. */
   tsz: Record<string, unknown>;
   raw: number[];
   /** Samples per raw chunk. Defaults to one chunk. */
   rawChunkLength?: number;
   levels?: FixtureLevel[];
+  /** Rows of the `runs` table: `[firstSample, sampleCount, startUs]` each. */
+  runs?: number[][];
 }
 
 /** A snippet array: `samples` is rows flattened, one row of `pointsPerEvent` values each. */
@@ -257,7 +259,7 @@ export interface FixtureCountLevel {
 
 /** One event channel of a fixture bundle. */
 export interface FixtureEvent {
-  key: string;
+  index: number;
   tsz: Record<string, unknown>;
   /** Event times in microseconds, written as int64. */
   events: number[];
@@ -265,7 +267,7 @@ export interface FixtureEvent {
   labels?: number[];
   values?: number[];
   text?: string[];
-  /** Channel keys each event applies to. The row width covers the bundle's largest key. */
+  /** Channel indices each event applies to. The row width covers the bundle's largest index. */
   channels?: number[][];
   waveforms?: FixtureSnippets;
   waveformMean?: FixtureSnippets;
@@ -295,13 +297,13 @@ function textRows(strings: string[]): { bytes: number[]; width: number } {
   return { bytes, width };
 }
 
-/** Encodes channel key lists as bitmask rows, bit `k mod 8` of byte `floor(k / 8)`. */
-function maskRows(keyLists: number[][], width: number): number[] {
+/** Encodes channel index lists as bitmask rows, bit `k mod 8` of byte `floor(k / 8)`. */
+function maskRows(indexLists: number[][], width: number): number[] {
   const bytes: number[] = [];
-  for (const keys of keyLists) {
+  for (const indices of indexLists) {
     const row = new Array<number>(width).fill(0);
-    for (const key of keys) {
-      row[key >> 3]! |= 1 << (key & 7);
+    for (const index of indices) {
+      row[index >> 3]! |= 1 << (index & 7);
     }
     bytes.push(...row);
   }
@@ -322,8 +324,8 @@ export function bundleFiles(
 ): Files {
   const files: Files = {};
   const metadata: Record<string, unknown> = {};
-  const maxKey = Math.max(0, ...channels.map((channel) => Number(channel.key)));
-  const maskWidth = Math.ceil((maxKey + 1) / 8);
+  const maxIndex = Math.max(0, ...channels.map((channel) => channel.index));
+  const maskWidth = Math.ceil((maxIndex + 1) / 8);
 
   const group = (path: string, attributes: Record<string, unknown>): void => {
     metadata[path] = {
@@ -372,7 +374,7 @@ export function bundleFiles(
   });
 
   for (const channel of channels) {
-    const { key } = channel;
+    const key = String(channel.index);
     group(key, { tsz: channel.tsz });
 
     if ("raw" in channel) {
@@ -384,6 +386,14 @@ export function bundleFiles(
         {},
         channel.rawChunkLength,
       );
+      if (channel.runs) {
+        array(
+          `${key}/runs`,
+          channel.runs.flat(),
+          [channel.runs.length, 3],
+          "int64",
+        );
+      }
       (channel.levels ?? []).forEach((level, index) => {
         const name = `${key}/${index + 1}`;
         const bins = level.pairs.length / 2;

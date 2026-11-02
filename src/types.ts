@@ -23,11 +23,14 @@ export interface Segment {
 
 /** Fields every channel carries, whatever its kind. */
 export interface ChannelBase {
-  /** The channel's key: the name of its group in the bundle, a decimal integer. */
-  readonly key: string;
   /**
-   * Id used to address the channel in queries: the producer's id, or the key when
-   * the bundle records none.
+   * The channel's index: the integer name of its group in the bundle, and the bit
+   * that names it in an event's `channels` column.
+   */
+  readonly index: number;
+  /**
+   * Id used to address the channel in queries: the producer's id, or the index as a
+   * string when the bundle records none.
    */
   readonly id: string;
   /** Human-readable channel label. */
@@ -49,7 +52,35 @@ export interface ContinuousChannelInfo extends ChannelBase {
   readonly rateHz: number;
   /** Time of the channel's first sample. */
   readonly startUs: number;
-  /** Exclusive end of the channel's data: one sample period past the last sample. */
+  /**
+   * Exclusive end of the channel's sample grid: one sample period past the last
+   * grid sample. On a channel with more than one run the last run ends within one
+   * sample period of this; `runs()` gives the exact end.
+   */
+  readonly endUs: number;
+  /**
+   * Number of runs: spans of samples recorded one period apart. 1 for a channel
+   * that never paused, 0 for an empty channel.
+   */
+  readonly runs: number;
+}
+
+/**
+ * One run of a continuous channel: consecutive samples recorded one sample period
+ * apart, with the exact time the run began.
+ *
+ * Times are microseconds from the bundle's origin. A run's samples are
+ * `firstSample` through `firstSample + sampleCount - 1` of the channel's grid, and
+ * sample `firstSample + i` is at `startUs + i * samplePeriod`. The grid places a run
+ * within one sample period of `startUs`.
+ */
+export interface Run {
+  /** Grid index of the run's first sample. */
+  readonly firstSample: number;
+  readonly sampleCount: number;
+  /** Exact time of the first sample. */
+  readonly startUs: number;
+  /** Exclusive end of the run: one sample period past its last sample. */
   readonly endUs: number;
 }
 
@@ -154,7 +185,7 @@ export interface EventWindow {
   readonly values?: Float64Array;
   /** Free text of each event. */
   readonly text?: readonly string[];
-  /** Ids of the channels each event applies to. An empty list means the whole recording. */
+  /** Ids of the channels each event applies to. An empty list names no channel. */
   readonly channels?: ReadonlyArray<readonly string[]>;
   /** The events' snippets, when the channel stores them and the query asked for them. */
   readonly waveforms?: Waveforms;
@@ -182,17 +213,17 @@ export interface EventCounts {
 /**
  * The bundle's `recording.json`: identity and the wall-clock time of its origin.
  *
- * Every other time in a bundle counts from the origin. Each field is absent when
- * the file omits it.
+ * Every other time in a bundle counts from the origin, its reference time. Each
+ * field is absent when the file omits it.
  */
 export interface RecordingInfo {
-  /** The origin as written, an RFC 3339 timestamp. */
-  readonly start?: string;
+  /** The reference time as written, an RFC 3339 timestamp. */
+  readonly referenceTime?: string;
   /**
-   * The origin in microseconds since the Unix epoch. Add a bundle time to it for
-   * wall-clock time.
+   * The reference time in microseconds since the Unix epoch. Add a bundle time to
+   * it for wall-clock time.
    */
-  readonly startUs?: number;
+  readonly referenceTimeUs?: number;
   readonly subject?: Readonly<Record<string, unknown>>;
   readonly session?: Readonly<Record<string, unknown>>;
   readonly source?: Readonly<Record<string, unknown>>;

@@ -80,6 +80,10 @@ export interface ContinuousEntry {
   readonly info: ContinuousChannelInfo;
   /** Finest first. The raw level is always present. */
   readonly levels: LevelInfo[];
+  /** Length of `raw`. */
+  readonly sampleCount: number;
+  /** The `runs` table, when the channel stores one: its path and row count. */
+  readonly runs?: { readonly path: `/${string}`; readonly rows: number };
 }
 
 /** One event channel of a bundle: its store path, info, and arrays. */
@@ -96,16 +100,16 @@ export type ChannelEntry = ContinuousEntry | EventEntry;
 /**
  * A bundle's channels plus two indexes.
  *
- * `byId` holds the same entry objects as `channels`, keyed by channel id. `idByKey`
- * maps a channel key to its id, which is how an event's `channels` column names the
- * channels it applies to.
+ * `byId` holds the same entry objects as `channels`, keyed by channel id. `idByIndex`
+ * maps a channel index to its id, which is how an event's `channels` column names
+ * the channels it applies to.
  */
 export interface BundleCatalog {
   /** The bundle's `tsz.version`. */
   readonly version: string;
   readonly channels: ChannelEntry[];
   readonly byId: Map<string, ChannelEntry>;
-  readonly idByKey: Map<string, string>;
+  readonly idByIndex: Map<number, string>;
 }
 
 /**
@@ -215,6 +219,9 @@ function rank2(shape: unknown): [number, number] | undefined {
 /** Level groups are named by positive integers. */
 const LEVEL_NAME = /^[1-9]\d*$/;
 
+/** Channel groups carry an integer name: a decimal integer with no leading zeros. */
+const INTEGER_NAME = /^(?:0|[1-9]\d*)$/;
+
 /** Returns a node's `tsz` attribute object. Throws when the node has none. */
 function tszOf(node: Json, where: string): Json {
   const tsz = asObject(asObject(node.attributes)?.tsz);
@@ -284,6 +291,16 @@ function tszReader(fields: Json, where: string) {
     optionalInteger,
     integer: (key: string, fallback: number): number =>
       optionalInteger(key) ?? fallback,
+    positiveInteger: (key: string): number => {
+      const value = optionalInteger(key);
+      if (value === undefined) {
+        throw missing(key, "an integer greater than 0");
+      }
+      if (value <= 0) {
+        throw invalid(key, "an integer greater than 0");
+      }
+      return value;
+    },
     optionalStringArray: (key: string): string[] | undefined => {
       const value = fields[key];
       if (value === undefined) {
@@ -321,19 +338,19 @@ interface ChannelNodes {
   readonly members: ReadonlyMap<string, ReadonlyMap<string, Json>>;
 }
 
-/** Reads a continuous channel: its attributes, raw array, and level groups. */
+/** Reads a continuous channel: its attributes, raw array, runs, and level groups. */
 function readContinuous(
-  key: string,
+  index: number,
   tsz: Json,
   nodes: ChannelNodes,
 ): ContinuousEntry {
-  const where = `channel /${key}`;
+  const where = `channel /${index}`;
   const attrs = tszReader(tsz, where);
   const name = attrs.string("name");
   const unit = attrs.string("unit");
   const rateHz = attrs.positiveNumber("rate_hz");
   const offsetUs = attrs.integer("offset_us", 0);
-  const id = attrs.optionalString("id") ?? key;
+  const id = attrs.optionalString("id") ?? String(index);
   const provenance = attrs.optionalObject("provenance");
 
   // 1. The raw samples. Their period comes from the rate; the format defines no
@@ -344,13 +361,33 @@ function readContinuous(
   }
   const periodUs = 1e6 / rateHz;
   const levels: LevelInfo[] = [
-    { path: `/${key}/raw`, periodUs, binCount: sampleCount, isMinMax: false },
+    {
+      path: `/${index}/raw`,
+      periodUs,
+      binCount: sampleCount,
+      isMinMax: false,
+    },
   ];
 
-  // 2. One level per numbered group. `minmax` is what a trace reads; `count` says how
-  //    much of each bin was recorded. `mean` and `var` are not read.
+  // 2. The runs table, one row per run, when the recording paused. Its rows are
+  //    read on demand; only the shape is checked here.
+  const runsNode = nodes.arrays.get("runs");
+  let runs: ContinuousEntry["runs"];
+  if (runsNode !== undefined) {
+    const dims = rank2(runsNode.shape);
+    if (dims === undefined || dims[1] !== 3 || dims[0] < 1) {
+      throw new Error(
+        `${where} runs must have shape [runs, 3] with at least one run (got ${JSON.stringify(runsNode.shape)})`,
+      );
+    }
+    runs = { path: `/${index}/runs`, rows: dims[0] };
+  }
+
+  // 3. One level per numbered group. `minmax` is what a trace reads; `count` says how
+  //    much of each bin was recorded. `mean` and `var` are not read. The factor
+  //    between levels is whatever their periods say; nothing assumes 4.
   for (const [level, group] of nodes.levelGroups) {
-    const levelWhere = `level /${key}/${level}`;
+    const levelWhere = `level /${index}/${level}`;
     const levelPeriodUs = tszReader(
       tszOf(group, levelWhere),
       levelWhere,
@@ -368,13 +405,13 @@ function readContinuous(
       );
     }
     const info: Mutable<LevelInfo> = {
-      path: `/${key}/${level}/minmax`,
+      path: `/${index}/${level}/minmax`,
       periodUs: levelPeriodUs,
       binCount,
       isMinMax: true,
     };
     if (count !== undefined) {
-      info.countPath = `/${key}/${level}/count`;
+      info.countPath = `/${index}/${level}/count`;
     }
     levels.push(info);
   }
@@ -382,28 +419,44 @@ function readContinuous(
 
   const info: Mutable<ContinuousChannelInfo> = {
     kind: "continuous",
-    key,
+    index,
     id,
     name,
     unit,
     rateHz,
     startUs: offsetUs,
     endUs: offsetUs + sampleCount * periodUs,
+    runs: runs?.rows ?? (sampleCount > 0 ? 1 : 0),
   };
   if (provenance !== undefined) {
     info.provenance = provenance;
   }
-  return { kind: "continuous", path: `/${key}`, info, levels };
+  const entry: Mutable<ContinuousEntry> = {
+    kind: "continuous",
+    path: `/${index}`,
+    info,
+    levels,
+    sampleCount,
+  };
+  if (runs !== undefined) {
+    entry.runs = runs;
+  }
+  return entry;
 }
 
 /** Reads an event channel: its attributes, event columns, snippets, and count levels. */
-function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
-  const where = `event channel /${key}`;
+function readEvent(index: number, tsz: Json, nodes: ChannelNodes): EventEntry {
+  const where = `event channel /${index}`;
   const attrs = tszReader(tsz, where);
   const name = attrs.string("name");
-  const id = attrs.optionalString("id") ?? key;
+  const id = attrs.optionalString("id") ?? String(index);
   const unit = attrs.optionalString("unit");
   const labelNames = attrs.optionalStringArray("label_names");
+  if (labelNames?.length === 0) {
+    throw new TypeError(
+      `${where}: tsz.label_names must name at least one label`,
+    );
+  }
   const maxDurationUs = attrs.optionalInteger("max_duration_us");
   const provenance = attrs.optionalObject("provenance");
 
@@ -412,7 +465,7 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
   if (count === undefined) {
     throw new Error(`${where} must have an events array of shape [n]`);
   }
-  const path = (leaf: string): `/${string}` => `/${key}/${leaf}`;
+  const path = (leaf: string): `/${string}` => `/${index}/${leaf}`;
 
   // 2. The optional per-event columns. Each has one row per event.
   const column = (leaf: string): ColumnArray | undefined => {
@@ -461,12 +514,18 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
     }
     const snippetWhere = `${where} ${leaf}`;
     const snippetAttrs = tszReader(tszOf(node, snippetWhere), snippetWhere);
+    const eventSample = snippetAttrs.integer("event_sample", 0);
+    if (eventSample < 0 || eventSample >= dims[1]) {
+      throw new RangeError(
+        `${snippetWhere}: tsz.event_sample must be in [0, ${dims[1]}) (got ${eventSample})`,
+      );
+    }
     return {
       path: path(leaf),
       rows: dims[0],
       pointsPerEvent: dims[1],
       periodUs: snippetAttrs.positiveNumber("period_us"),
-      eventSample: snippetAttrs.integer("event_sample", 0),
+      eventSample,
     };
   };
 
@@ -478,12 +537,11 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
   const waveforms = snippets("waveforms", count);
   const waveformMean = snippets("waveform_mean");
 
-  // 3. Count levels. The specification puts bin 0 at the origin and defines no
-  //    offset_us here; timeseries-zarr-py's spec copy adds one and its writer emits
-  //    it, so honor it when present and default to 0.
+  // 3. Count levels. A level's period is a whole number of microseconds, and bin 0
+  //    starts at offset_us, which defaults to 0.
   const countLevels: CountLevelInfo[] = [];
   for (const [level, group] of nodes.levelGroups) {
-    const levelWhere = `count level /${key}/${level}`;
+    const levelWhere = `count level /${index}/${level}`;
     const levelAttrs = tszReader(tszOf(group, levelWhere), levelWhere);
     const dims = rank2(nodes.members.get(level)?.get("count")?.shape);
     if (dims === undefined) {
@@ -492,9 +550,9 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
       );
     }
     countLevels.push({
-      path: `/${key}/${level}/count`,
+      path: `/${index}/${level}/count`,
       level: Number(level),
-      periodUs: levelAttrs.positiveNumber("period_us"),
+      periodUs: levelAttrs.positiveInteger("period_us"),
       offsetUs: levelAttrs.integer("offset_us", 0),
       binCount: dims[0],
       labelCount: dims[1],
@@ -538,7 +596,7 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
 
   const info: Mutable<EventChannelInfo> = {
     kind: "event",
-    key,
+    index,
     id,
     name,
     eventCount: count,
@@ -558,7 +616,7 @@ function readEvent(key: string, tsz: Json, nodes: ChannelNodes): EventEntry {
   if (provenance !== undefined) {
     info.provenance = provenance;
   }
-  return { kind: "event", path: `/${key}`, info, arrays };
+  return { kind: "event", path: `/${index}`, info, arrays };
 }
 
 /** Parses the root `zarr.json` and checks it is a Zarr v3 group. */
@@ -624,11 +682,12 @@ function readVersion(root: Json): string {
  * The bundle is read in one request to `/zarr.json`, whose `consolidated_metadata`
  * inlines every descendant's metadata. The store tree is never walked.
  *
- * Every child group of the root whose `tsz.kind` is `continuous` or `event` is a
- * channel. Other groups, arrays, and kinds are ignored, as are `tsz` keys and child
- * nodes the format does not define, so a bundle from a later 1.x release still opens.
- * A continuous channel's levels are returned finest first, the raw samples before any
- * `minmax` level. An event channel's arrays are read into {@link EventArrays}.
+ * Every child group of the root with an integer name whose `tsz.kind` is `continuous`
+ * or `event` is a channel. Other groups, arrays, and kinds are ignored, as are `tsz`
+ * keys and child nodes the format does not define, so a bundle from a later 1.x
+ * release still opens. A continuous channel's levels are returned finest first, the
+ * raw samples before any `minmax` level. An event channel's arrays are read into
+ * {@link EventArrays}.
  *
  * Throws for a missing `/zarr.json`, invalid JSON, a root that is not a Zarr v3 group,
  * a missing or non-1.x `tsz.version`, missing `consolidated_metadata`, a channel or
@@ -647,6 +706,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
   // 1. Index every node by the channel it sits under. Consolidated paths are flat and
   //    relative: "0" a channel group, "0/raw" an array, "0/1" a level group, and
   //    "0/1/minmax" a level member. Deeper nodes belong to nothing the format defines.
+  //    A root child without an integer name is not a channel group.
   const channelGroups = new Map<string, Json>();
   const arraysByChannel = new Map<string, Map<string, Json>>();
   const levelGroupsByChannel = new Map<string, Map<string, Json>>();
@@ -667,7 +727,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
       continue;
     }
     if (leaf === undefined) {
-      if (node.node_type === "group") {
+      if (node.node_type === "group" && INTEGER_NAME.test(key)) {
         channelGroups.set(key, node);
       }
     } else if (member === undefined) {
@@ -688,26 +748,28 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
   // 2. Read each channel group by its kind.
   const channels: ChannelEntry[] = [];
   const byId = new Map<string, ChannelEntry>();
-  const idByKey = new Map<string, string>();
+  const idByIndex = new Map<number, string>();
 
-  for (const [key, group] of channelGroups) {
+  for (const [name, group] of channelGroups) {
     const tsz = asObject(asObject(group.attributes)?.tsz);
     const kind = tsz?.kind;
     if (tsz === undefined || (kind !== "continuous" && kind !== "event")) {
       continue;
     }
+    const index = Number(name);
     const channelNodes: ChannelNodes = {
-      arrays: arraysByChannel.get(key) ?? new Map(),
-      levelGroups: levelGroupsByChannel.get(key) ?? new Map(),
-      members: membersByChannel.get(key) ?? new Map(),
+      arrays: arraysByChannel.get(name) ?? new Map(),
+      levelGroups: levelGroupsByChannel.get(name) ?? new Map(),
+      members: membersByChannel.get(name) ?? new Map(),
     };
     const entry =
       kind === "continuous"
-        ? readContinuous(key, tsz, channelNodes)
-        : readEvent(key, tsz, channelNodes);
+        ? readContinuous(index, tsz, channelNodes)
+        : readEvent(index, tsz, channelNodes);
 
     // Ids are the query handle, so two channels cannot share one. A channel with no id
-    // uses its key, so a producer id that matches another channel's key collides too.
+    // uses its index, so a producer id that matches another channel's index collides
+    // too.
     const claimed = byId.get(entry.info.id);
     if (claimed !== undefined) {
       throw new Error(
@@ -716,8 +778,8 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
     }
     channels.push(entry);
     byId.set(entry.info.id, entry);
-    idByKey.set(key, entry.info.id);
+    idByIndex.set(index, entry.info.id);
   }
 
-  return { version, channels, byId, idByKey };
+  return { version, channels, byId, idByIndex };
 }

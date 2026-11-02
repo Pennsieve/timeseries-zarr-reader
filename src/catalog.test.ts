@@ -43,7 +43,7 @@ function without<T extends object, K extends keyof T>(
 const continuousChannel = (
   over: Partial<FixtureContinuous> = {},
 ): FixtureContinuous => ({
-  key: "0",
+  index: 0,
   tsz: { ...continuousTsz },
   raw: RAW,
   levels: [
@@ -58,7 +58,7 @@ const continuousChannel = (
 });
 
 const eventChannel = (over: Partial<FixtureEvent> = {}): FixtureEvent => ({
-  key: "2",
+  index: 2,
   tsz: { kind: "event", name: "marks", id: "ch-9" },
   events: [1000, 2000, 3000],
   ...over,
@@ -332,13 +332,14 @@ describe("readCatalog: continuous channels", () => {
     expect(entry.path).toBe("/0");
     expect(entry.info).toEqual({
       kind: "continuous",
-      key: "0",
+      index: 0,
       id: "ch-1",
       name: "LFP 1",
       unit: "uV",
       rateHz: 1000,
       startUs: 0,
       endUs: 400_000,
+      runs: 1,
     });
     if (entry.kind !== "continuous") throw new Error("unreachable");
     expect(entry.levels).toEqual([
@@ -375,17 +376,17 @@ describe("readCatalog: continuous channels", () => {
     expect(entry.levels[0]!.periodUs).toBe(1e6 / 512);
   });
 
-  test("defaults offset_us to 0 and the id to the channel key", async () => {
+  test("defaults offset_us to 0 and the id to the channel index", async () => {
     const minimal = without(continuousTsz, "offset_us", "id");
     const catalog = await readCatalog(
-      storeOf([continuousChannel({ key: "4", tsz: minimal })]),
+      storeOf([continuousChannel({ index: 4, tsz: minimal })]),
     );
     const entry = catalog.channels[0]!;
     expect(entry.info.id).toBe("4");
-    expect(entry.info.key).toBe("4");
+    expect(entry.info.index).toBe(4);
     expect(entry.info.kind === "continuous" && entry.info.startUs).toBe(0);
     expect(catalog.byId.get("4")).toBe(entry);
-    expect(catalog.idByKey.get("4")).toBe("4");
+    expect(catalog.idByIndex.get(4)).toBe("4");
   });
 
   test("accepts a negative offset_us", async () => {
@@ -562,7 +563,7 @@ describe("readCatalog: continuous channels", () => {
   test("rejects two channels with the same id", async () => {
     const store = storeOf([
       continuousChannel(),
-      continuousChannel({ key: "1" }),
+      continuousChannel({ index: 1 }),
     ]);
     await expect(readCatalog(store)).rejects.toThrow(
       /duplicate channel id ch-1: \/0 and \/1/,
@@ -579,7 +580,7 @@ describe("readCatalog: event channels", () => {
     expect(entry!.kind).toBe("event");
     expect(entry!.info).toEqual({
       kind: "event",
-      key: "2",
+      index: 2,
       id: "ch-9",
       name: "marks",
       eventCount: 3,
@@ -634,7 +635,7 @@ describe("readCatalog: event channels", () => {
     const entry = catalog.byId.get("det")!;
     expect(entry.info).toEqual({
       kind: "event",
-      key: "2",
+      index: 2,
       id: "det",
       name: "detector",
       unit: "a.u.",
@@ -729,7 +730,7 @@ describe("readCatalog: event channels", () => {
   test("defaults the id to the channel key", async () => {
     const catalog = await readCatalog(
       storeOf([
-        eventChannel({ key: "7", tsz: { kind: "event", name: "marks" } }),
+        eventChannel({ index: 7, tsz: { kind: "event", name: "marks" } }),
       ]),
     );
     expect(catalog.channels[0]!.info.id).toBe("7");
@@ -752,19 +753,19 @@ describe("readCatalog: event channels", () => {
     expect(Object.keys(entry.arrays)).toEqual(["events", "countLevels"]);
   });
 
-  test("enumerates a mixed bundle in key order", async () => {
+  test("enumerates a mixed bundle in index order", async () => {
     const catalog = await readCatalog(
-      storeOf([eventChannel({ key: "1" }), continuousChannel()]),
+      storeOf([eventChannel({ index: 1 }), continuousChannel()]),
     );
     expect(
-      catalog.channels.map((entry) => [entry.info.key, entry.kind]),
+      catalog.channels.map((entry) => [entry.info.index, entry.kind]),
     ).toEqual([
-      ["0", "continuous"],
-      ["1", "event"],
+      [0, "continuous"],
+      [1, "event"],
     ]);
-    expect([...catalog.idByKey]).toEqual([
-      ["0", "ch-1"],
-      ["1", "ch-9"],
+    expect([...catalog.idByIndex]).toEqual([
+      [0, "ch-1"],
+      [1, "ch-9"],
     ]);
   });
 
@@ -903,7 +904,7 @@ describe("readCatalog: what is not a channel", () => {
 
     const catalog = await readCatalog(createMemoryStore(files));
 
-    expect(catalog.channels.map((entry) => entry.info.key)).toEqual(["0"]);
+    expect(catalog.channels.map((entry) => entry.info.index)).toEqual([0]);
   });
 
   test("ignores a level group named 0, which the format does not define", async () => {
@@ -918,5 +919,137 @@ describe("readCatalog: what is not a channel", () => {
     const entry = catalog.channels[0]!;
     if (entry.kind !== "continuous") throw new Error("unreachable");
     expect(entry.levels).toHaveLength(3);
+  });
+});
+
+describe("readCatalog: runs", () => {
+  test("notes a runs table and counts its rows, reading none of it", async () => {
+    const catalog = await readCatalog(
+      storeOf([
+        continuousChannel({
+          runs: [
+            [0, 100, 0],
+            [200, 200, 200_400],
+          ],
+        }),
+      ]),
+    );
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.runs).toEqual({ path: "/0/runs", rows: 2 });
+    expect(entry.sampleCount).toBe(400);
+    expect(entry.info.runs).toBe(2);
+  });
+
+  test("reports one run without a table, and none for an empty channel", async () => {
+    const catalog = await readCatalog(
+      storeOf([
+        continuousChannel(),
+        continuousChannel({
+          index: 1,
+          tsz: { ...continuousTsz, id: "empty" },
+          raw: [],
+          levels: [],
+        }),
+      ]),
+    );
+    expect(catalog.channels.map((entry) => entry.info)).toMatchObject([
+      { runs: 1 },
+      { runs: 0 },
+    ]);
+    expect(catalog.channels[0]).not.toHaveProperty("runs");
+  });
+
+  test("rejects a runs table that is not [runs, 3] or has no rows", async () => {
+    const { root, files } = rootOf([
+      continuousChannel({ runs: [[0, 400, 0]] }),
+    ]);
+    for (const shape of [[1], [1, 2], [0, 3]]) {
+      root.consolidated_metadata.metadata["0/runs"]!.shape = shape;
+      files["/zarr.json"] = JSON.stringify(root);
+      await expect(readCatalog(createMemoryStore(files))).rejects.toThrow(
+        /channel \/0 runs must have shape \[runs, 3\]/,
+      );
+    }
+  });
+});
+
+describe("readCatalog: the rules of 1.0", () => {
+  test("ignores a root group whose name is not an integer name", async () => {
+    const { root, files } = rootOf([continuousChannel()]);
+    const metadata = root.consolidated_metadata.metadata;
+    for (const name of ["07", "ch1", "-1"]) {
+      metadata[name] = { ...metadata["0"]! };
+    }
+    files["/zarr.json"] = JSON.stringify(root);
+
+    const catalog = await readCatalog(createMemoryStore(files));
+    expect(catalog.channels.map((entry) => entry.path)).toEqual(["/0"]);
+  });
+
+  test("accepts levels whose factor is not 4, sorted by period", async () => {
+    const catalog = await readCatalog(
+      storeOf([
+        continuousChannel({
+          levels: [
+            { periodUs: 6000, pairs: pairsOf(RAW, 6) },
+            { periodUs: 2000, pairs: pairsOf(RAW, 2) },
+            { periodUs: 24_000, pairs: pairsOf(RAW, 24) },
+          ],
+        }),
+      ]),
+    );
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.levels.map((level) => level.periodUs)).toEqual([
+      1000, 2000, 6000, 24_000,
+    ]);
+  });
+
+  test("rejects a count level whose period_us is not a positive integer", async () => {
+    for (const periodUs of [1000.5, 0, -1000]) {
+      await expect(
+        readCatalog(
+          storeOf([
+            eventChannel({
+              countLevels: [{ periodUs, labelCount: 1, counts: [3] }],
+            }),
+          ]),
+        ),
+      ).rejects.toThrow(
+        /count level \/2\/1: tsz\.period_us must be an integer/,
+      );
+    }
+  });
+
+  test("rejects an event_sample outside the snippet", async () => {
+    for (const eventSample of [-1, 3]) {
+      await expect(
+        readCatalog(
+          storeOf([
+            eventChannel({
+              waveforms: {
+                periodUs: 100,
+                pointsPerEvent: 3,
+                samples: new Array<number>(9).fill(0),
+                eventSample,
+              },
+            }),
+          ]),
+        ),
+      ).rejects.toThrow(/waveforms: tsz\.event_sample must be in \[0, 3\)/);
+    }
+  });
+
+  test("rejects an empty label_names", async () => {
+    await expect(
+      readCatalog(
+        storeOf([
+          eventChannel({
+            tsz: { kind: "event", name: "marks", label_names: [] },
+          }),
+        ]),
+      ),
+    ).rejects.toThrow(/label_names must name at least one label/);
   });
 });

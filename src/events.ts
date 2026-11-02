@@ -76,30 +76,30 @@ export function decodeText(
 }
 
 /**
- * Decodes `count` bitmask rows, `width` bytes each, to the channel keys each row
+ * Decodes `count` bitmask rows, `width` bytes each, to the channel indices each row
  * names, ascending.
  *
- * Bit `k mod 8` of byte `floor(k / 8)`, least significant bit first, names channel
- * key `k`. A row of zeros gives an empty list: the event applies to the whole
- * recording.
+ * Bit `k mod 8` of byte `floor(k / 8)`, least significant bit first, names the
+ * channel with index `k`. A row of zeros gives an empty list: the event names no
+ * channel.
  */
-export function decodeChannelKeys(
+export function decodeChannelIndices(
   rows: Uint8Array,
   width: number,
   count: number,
 ): number[][] {
   const out: number[][] = [];
   for (let row = 0; row < count; row++) {
-    const keys: number[] = [];
+    const indices: number[] = [];
     for (let byte = 0; byte < width; byte++) {
       const bits = rows[row * width + byte]!;
       for (let bit = 0; bit < 8; bit++) {
         if ((bits >> bit) & 1) {
-          keys.push(byte * 8 + bit);
+          indices.push(byte * 8 + bit);
         }
       }
     }
-    out.push(keys);
+    out.push(indices);
   }
   return out;
 }
@@ -159,22 +159,23 @@ function keepRows(
 /**
  * Reads one event channel's events over a time window.
  *
- * An event is in the window when it starts before `endUs` and ends at or after
- * `startUs`, so an interval that opened before the window and is still running
- * counts. A point event ends when it starts. Finding the open intervals means
- * searching back from `startUs` by the channel's duration bound, or from the first
- * event when the channel has durations but declares no bound.
+ * An event is in the window when its span overlaps `[startUs, endUs)`. A point event
+ * is the instant of its time, and an interval covers `[t, t + d)`, so an interval
+ * that opened before the window and is still running counts and one that ended
+ * exactly at `startUs` does not. Finding the open intervals means searching back from
+ * `startUs` by the channel's duration bound, or from the first event when the
+ * channel has durations but declares no bound.
  *
  * Every column read covers the same events, so index `i` of each is event `i`. The
- * `channels` column is resolved from channel keys to ids through `idByKey`; a key
- * with no channel in the bundle is returned as the key itself. Waveforms are read
- * only when the window holds events and the pixel gate admits them.
+ * `channels` column is resolved from channel indices to ids through `idByIndex`; an
+ * index with no channel in the bundle is returned as the index itself. Waveforms are
+ * read only when the window holds events and the pixel gate admits them.
  */
 export async function queryEventChannel(
   store: Store,
   channelId: string,
   arrays: EventArrays,
-  idByKey: ReadonlyMap<string, string>,
+  idByIndex: ReadonlyMap<number, string>,
   query: EventQuery,
   opts?: StoreOptions,
 ): Promise<EventWindow> {
@@ -196,8 +197,9 @@ export async function queryEventChannel(
   const span = { start, end };
   const spanLength = end - start;
 
-  // 2. Read times and durations, and drop the look-back events that ended before the
-  //    window. `kept` stays undefined when nothing was dropped.
+  // 2. Read times and durations, and drop the look-back events that ended at or
+  //    before the window start. A point event there is in the window; an interval
+  //    is half-open and is not. `kept` stays undefined when nothing was dropped.
   const [times, durations] = await Promise.all([
     events.read(start, end),
     arrays.durations === undefined
@@ -210,7 +212,8 @@ export async function queryEventChannel(
   if (durations !== undefined) {
     kept = [];
     for (let i = 0; i < times.length; i++) {
-      if (times[i]! + durations[i]! >= query.startUs) {
+      const t = times[i]!;
+      if (t >= query.startUs || t + durations[i]! > query.startUs) {
         kept.push(i);
       }
     }
@@ -280,14 +283,14 @@ export async function queryEventChannel(
     );
   }
   if (channelRows !== undefined && arrays.channels !== undefined) {
-    const keyRows = decodeChannelKeys(
+    const indexRows = decodeChannelIndices(
       channelRows.data,
       arrays.channels.width,
       spanLength,
     );
     window.channels = keepItems(
-      keyRows.map((keys) =>
-        keys.map((key) => idByKey.get(String(key)) ?? String(key)),
+      indexRows.map((indices) =>
+        indices.map((index) => idByIndex.get(index) ?? String(index)),
       ),
       kept,
     );

@@ -15,6 +15,7 @@ export type {
   MontagePair,
   ReadPriority,
   RecordingInfo,
+  Run,
   Segment,
   Store,
   StoreOptions,
@@ -27,6 +28,7 @@ export type {
   EventCountOptions,
   EventQueryOptions,
   QueryOptions,
+  RunOptions,
   StreamingClientOptions,
   WaveformMeanOptions,
 } from "./client.js";

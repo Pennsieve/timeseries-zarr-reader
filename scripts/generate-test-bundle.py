@@ -9,17 +9,21 @@ state exact expectations against it.
 The bundle's origin is the session start, 2024-01-01T00:00:00Z. Every channel time
 below is relative to it.
 
-- "sineA" (key 0): 50 * sin(2 pi * 5 Hz * t) at 1 kHz, 30_000 samples from 0.
-- "sineB" (key 1): 30 * sin(2 pi * 8 Hz * t) at 1 kHz, 30_000 samples from 2 s, so
-                   its offset_us is 2_000_000 and it is montage-able with sineA.
-- "noise" (key 2): seeded white noise at 1 kHz from 0 (incompressible, for the
-                   bandwidth test).
-- "unitA" (key 3): 70_000 spikes at (i + 1) * 137_000 us, labels i % 3 named
-                   "u0".."u2", a 32-point mean waveform per label (row j is
-                   j, j + 1, ..., j + 31) at 30 kHz. Dense enough for count levels.
-- "marks" (key 4): 6 clinical marks with durations, labels, text, and channels:
-                   a 90 s seizure from 10 s scoped to sineA, four point spikes
-                   scoped to sineA, sineB, or both, and one whole-recording note.
+- "sineA" (index 0): 50 * sin(2 pi * 5 Hz * t) at 1 kHz, 30_000 samples from 0.
+- "sineB" (index 1): 30 * sin(2 pi * 8 Hz * t) at 1 kHz, 30_000 samples from 2 s, so
+                     its offset_us is 2_000_000 and it is montage-able with sineA.
+- "noise" (index 2): seeded white noise at 1 kHz from 0 (incompressible, for the
+                     bandwidth test).
+- "pausedA" (index 3): 20 * sin(2 pi * 3 Hz * t) at 1 kHz in two runs of 10_000
+                     samples, from 0 and from 12.0004 s. The resume is 0.4 periods
+                     past the grid, so the grid holds 22_000 samples with 2_000 NaN
+                     between the runs and a `runs` table with the exact times.
+- "unitA" (index 4): 70_000 spikes at (i + 1) * 137_000 us, labels i % 3 named
+                     "u0".."u2", a 32-point mean waveform per label (row j is
+                     j, j + 1, ..., j + 31) at 30 kHz. Dense enough for count levels.
+- "marks" (index 5): 6 clinical marks with durations, labels, text, and channels:
+                     a 90 s seizure from 10 s scoped to sineA, four point spikes
+                     scoped to sineA, sineB, or both, and one note scoped to none.
 
 min_bins is lowered to 256 so a 30 k-sample channel produces three pyramid levels
 (periods 4, 16 and 64 ms; a fourth would hold fewer than 256 bins), and inner_len to
@@ -49,12 +53,15 @@ sys.path.insert(
 )
 
 from timeseries_zarr.bundle import write_bundle  # noqa: E402
+from timeseries_zarr.runs import Run  # noqa: E402
 from timeseries_zarr.types import RecordingMeta, WriteOpts  # noqa: E402
 
 SESSION_START = datetime(2024, 1, 1, tzinfo=UTC)
 START_US = 1_704_067_200_000_000  # SESSION_START in microseconds since the epoch
 RATE_HZ = 1000.0
 N_SAMPLES = 30_000
+N_RUN = 10_000
+RESUME_US = 12_000_400  # 0.4 sample periods past the grid
 N_SPIKES = 70_000
 SPIKE_STEP_US = 137_000
 POINTS = 32
@@ -109,6 +116,31 @@ class NoiseSource:
 
     def read_samples(self, start: int, stop: int):
         return self._samples[start:stop]
+
+
+class PausedSource:
+    """A channel that paused and resumed off its sample grid: two runs."""
+
+    id = "pausedA"
+    name = "Paused A"
+    unit = "uV"
+
+    def rate_hz(self) -> float:
+        return RATE_HZ
+
+    def start_us(self) -> int:
+        return START_US
+
+    def num_samples(self) -> int:
+        # The samples delivered. The pause adds none; the writer places the gap.
+        return 2 * N_RUN
+
+    def runs(self):
+        return [Run(START_US, N_RUN), Run(START_US + RESUME_US, N_RUN)]
+
+    def read_samples(self, start: int, stop: int):
+        i = np.arange(start, stop, dtype=np.float64)
+        return (20.0 * np.sin(2.0 * np.pi * 3.0 * i / RATE_HZ)).astype(np.float32)
 
 
 class SpikeSource:
@@ -236,6 +268,7 @@ def main() -> None:
             SineSource("sineA", "Sine A", 5.0, 50.0, START_US),
             SineSource("sineB", "Sine B", 8.0, 30.0, START_US + 2_000_000),
             NoiseSource(),
+            PausedSource(),
         ],
         [SpikeSource(), MarkSource()],
         output_path=final,
