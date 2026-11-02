@@ -45,10 +45,9 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 /**
  * Reads the bundle's `recording.json`, or resolves undefined when it has none.
  *
- * The origin's wall-clock time is the `start` key. `reference_time`, the name
- * timeseries-zarr-py writes for the same instant, is accepted too. Throws when the
- * file is not a JSON object, a field has the wrong type, or the timestamp does not
- * parse.
+ * The origin's wall-clock time is the `reference_time` key. Keys the format does not
+ * define are ignored. Throws when the file is not a JSON object, a field has the
+ * wrong type, or the timestamp does not parse.
  */
 export async function readRecording(
   store: Store,
@@ -71,15 +70,15 @@ export async function readRecording(
   }
 
   const info: Mutable<RecordingInfo> = {};
-  const start = doc.start ?? doc.reference_time;
-  if (start !== undefined) {
-    if (typeof start !== "string") {
+  const referenceTime = doc.reference_time;
+  if (referenceTime !== undefined) {
+    if (typeof referenceTime !== "string") {
       throw new TypeError(
-        `/recording.json start must be a string (got ${JSON.stringify(start)})`,
+        `/recording.json reference_time must be a string (got ${JSON.stringify(referenceTime)})`,
       );
     }
-    info.start = start;
-    info.startUs = parseRfc3339Us(start);
+    info.referenceTime = referenceTime;
+    info.referenceTimeUs = parseRfc3339Us(referenceTime);
   }
   for (const key of ["subject", "session", "source"] as const) {
     if (doc[key] === undefined) {

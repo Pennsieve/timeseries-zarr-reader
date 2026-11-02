@@ -6,7 +6,7 @@ import { bundleFiles, createMemoryStore } from "./test-utils.js";
 import type { Store } from "./types.js";
 import type { TimestampReader } from "./zarr.js";
 import {
-  decodeChannelKeys,
+  decodeChannelIndices,
   decodeText,
   firstIndexAtOrAfter,
   queryEventChannel,
@@ -92,15 +92,15 @@ describe("decodeText", () => {
   });
 });
 
-describe("decodeChannelKeys", () => {
+describe("decodeChannelIndices", () => {
   test("names the keys whose bits are set, least significant bit first", () => {
     // Row 0: keys 0 and 2. Row 1: nothing. Row 2: keys 7 and 8, across a byte boundary.
     const rows = Uint8Array.from([0b101, 0, 0, 0, 0b1000_0000, 0b1]);
-    expect(decodeChannelKeys(rows, 2, 3)).toEqual([[0, 2], [], [7, 8]]);
+    expect(decodeChannelIndices(rows, 2, 3)).toEqual([[0, 2], [], [7, 8]]);
   });
 
   test("returns no rows for a count of zero", () => {
-    expect(decodeChannelKeys(new Uint8Array(0), 1, 0)).toEqual([]);
+    expect(decodeChannelIndices(new Uint8Array(0), 1, 0)).toEqual([]);
   });
 });
 
@@ -111,7 +111,7 @@ async function openEvents(
 ): Promise<{
   store: Store;
   arrays: EventArrays;
-  idByKey: Map<string, string>;
+  idByIndex: Map<number, string>;
 }> {
   const store = createMemoryStore(bundleFiles(channels));
   const catalog = await readCatalog(store);
@@ -119,11 +119,11 @@ async function openEvents(
   if (entry?.kind !== "event") {
     throw new Error(`fixture has no event channel ${id}`);
   }
-  return { store, arrays: entry.arrays, idByKey: catalog.idByKey };
+  return { store, arrays: entry.arrays, idByIndex: catalog.idByIndex };
 }
 
 const SPIKES: FixtureEvent = {
-  key: "5",
+  index: 5,
   tsz: { kind: "event", name: "Unit 1", id: "u", label_names: ["a", "b"] },
   events: [2000, 5000, 5500, 9000],
   labels: [0, 1, 1, 0],
@@ -137,8 +137,8 @@ const SPIKES: FixtureEvent = {
 
 describe("queryEventChannel: point events", () => {
   test("reads the events inside a window, end exclusive, with their labels", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 3000,
       endUs: 9000,
       pixelWidthUs: 1000,
@@ -156,8 +156,8 @@ describe("queryEventChannel: point events", () => {
   });
 
   test("includes an event exactly at the window start", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 5000,
       endUs: 9000,
     });
@@ -166,8 +166,8 @@ describe("queryEventChannel: point events", () => {
 
   test("fetches the matching waveform rows when the snippet spans more than 10 pixels", async () => {
     // One snippet is 3 x 100 us = 300 us. A 20 us pixel puts it across 15 pixels.
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 3000,
       endUs: 9000,
       pixelWidthUs: 20,
@@ -182,8 +182,8 @@ describe("queryEventChannel: point events", () => {
   });
 
   test("fetches waveforms with no pixel gate when pixelWidthUs is omitted", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 0,
       endUs: 10_000,
     });
@@ -191,8 +191,8 @@ describe("queryEventChannel: point events", () => {
   });
 
   test("reads only the requested columns", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 0,
       endUs: 10_000,
       columns: [],
@@ -203,7 +203,7 @@ describe("queryEventChannel: point events", () => {
   });
 
   test("searches for both window bounds concurrently", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
     const eventsChunk = "/5/events/c/0";
     let inFlight = 0;
     let peakInFlight = 0;
@@ -223,7 +223,7 @@ describe("queryEventChannel: point events", () => {
       },
     };
 
-    const window = await queryEventChannel(tracked, "u", arrays, idByKey, {
+    const window = await queryEventChannel(tracked, "u", arrays, idByIndex, {
       startUs: 3000,
       endUs: 9000,
     });
@@ -234,8 +234,8 @@ describe("queryEventChannel: point events", () => {
   });
 
   test("returns no events and no columns for an empty window", async () => {
-    const { store, arrays, idByKey } = await openEvents([SPIKES], "u");
-    const window = await queryEventChannel(store, "u", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
+    const window = await queryEventChannel(store, "u", arrays, idByIndex, {
       startUs: 20_000,
       endUs: 21_000,
       pixelWidthUs: 20,
@@ -248,7 +248,7 @@ describe("queryEventChannel: point events", () => {
 });
 
 const MARKS: FixtureEvent = {
-  key: "3",
+  index: 3,
   tsz: {
     kind: "event",
     name: "marks",
@@ -268,15 +268,15 @@ const MARKS: FixtureEvent = {
 };
 
 const CONTINUOUS = {
-  key: "0",
+  index: 0,
   tsz: { kind: "continuous", name: "A", id: "a", unit: "uV", rate_hz: 1000 },
   raw: [0, 0, 0, 0],
 };
 
 describe("queryEventChannel: intervals and text", () => {
   test("includes an interval that starts before the window and is still open", async () => {
-    const { store, arrays, idByKey } = await openEvents([MARKS], "m");
-    const window = await queryEventChannel(store, "m", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([MARKS], "m");
+    const window = await queryEventChannel(store, "m", arrays, idByIndex, {
       startUs: 155_000,
       endUs: 200_000,
     });
@@ -290,39 +290,48 @@ describe("queryEventChannel: intervals and text", () => {
     expect(window.text).toEqual(["sz onset", "note: µV"]);
   });
 
-  test("keeps an interval that ends exactly at the window start and drops one that ended before", async () => {
-    const { store, arrays, idByKey } = await openEvents([MARKS], "m");
-    const atEnd = await queryEventChannel(store, "m", arrays, idByKey, {
+  test("drops an interval that ended exactly at the window start and keeps a point event there", async () => {
+    const { store, arrays, idByIndex } = await openEvents([MARKS], "m");
+    // The seizure covers [100, 160) ms, so it is still open at 159.999 ms and over
+    // at 160 ms.
+    const open = await queryEventChannel(store, "m", arrays, idByIndex, {
+      startUs: 159_999,
+      endUs: 170_000,
+    });
+    expect(Array.from(open.times)).toEqual([100_000]);
+
+    const over = await queryEventChannel(store, "m", arrays, idByIndex, {
       startUs: 160_000,
       endUs: 170_000,
     });
-    expect(Array.from(atEnd.times)).toEqual([100_000]);
+    expect(over.times.length).toBe(0);
+    expect(over.text).toEqual([]);
 
-    const pastEnd = await queryEventChannel(store, "m", arrays, idByKey, {
-      startUs: 160_001,
+    // The spike at 150 ms is the instant 150 ms, which a window from 150 ms holds.
+    const atPoint = await queryEventChannel(store, "m", arrays, idByIndex, {
+      startUs: 150_000,
       endUs: 170_000,
     });
-    expect(pastEnd.times.length).toBe(0);
-    expect(pastEnd.text).toEqual([]);
+    expect(Array.from(atPoint.times)).toEqual([100_000, 150_000]);
   });
 
   test("searches from the first event when durations have no bound", async () => {
     const tsz = { ...MARKS.tsz };
     delete tsz.max_duration_us;
-    const { store, arrays, idByKey } = await openEvents(
+    const { store, arrays, idByIndex } = await openEvents(
       [{ ...MARKS, tsz }],
       "m",
     );
     expect(arrays.durations?.maxDurationUs).toBeUndefined();
 
-    const window = await queryEventChannel(store, "m", arrays, idByKey, {
+    const window = await queryEventChannel(store, "m", arrays, idByIndex, {
       startUs: 155_000,
       endUs: 200_000,
     });
     expect(Array.from(window.times)).toEqual([100_000, 190_000]);
   });
 
-  test("resolves the channels column to channel ids, keeping an unknown key as is", async () => {
+  test("resolves the channels column to channel ids, keeping an unknown index as is", async () => {
     const store = createMemoryStore(bundleFiles([CONTINUOUS, MARKS]));
     const catalog = await readCatalog(store);
     const entry = catalog.byId.get("m")!;
@@ -332,19 +341,20 @@ describe("queryEventChannel: intervals and text", () => {
       store,
       "m",
       entry.arrays,
-      catalog.idByKey,
+      catalog.idByIndex,
       {
         startUs: 0,
         endUs: 500_000,
       },
     );
-    // Key 0 is channel "a". Keys 1 and 7 name no channel in this bundle.
+    // Index 0 is channel "a". Indices 1 and 7 name no channel in this bundle, and
+    // an all-zero row names none.
     expect(window.channels).toEqual([["a"], [], ["a", "1"], ["7"]]);
   });
 
   test("decodes JSON text as the string it is", async () => {
-    const { store, arrays, idByKey } = await openEvents([MARKS], "m");
-    const window = await queryEventChannel(store, "m", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([MARKS], "m");
+    const window = await queryEventChannel(store, "m", arrays, idByIndex, {
       startUs: 400_000,
       endUs: 400_001,
       columns: ["text"],
@@ -362,8 +372,8 @@ describe("queryEventChannel: intervals and text", () => {
         samples: [1, 1, 2, 2, 3, 3, 4, 4],
       },
     };
-    const { store, arrays, idByKey } = await openEvents([withSnippets], "m");
-    const window = await queryEventChannel(store, "m", arrays, idByKey, {
+    const { store, arrays, idByIndex } = await openEvents([withSnippets], "m");
+    const window = await queryEventChannel(store, "m", arrays, idByIndex, {
       startUs: 155_000,
       endUs: 200_000,
     });

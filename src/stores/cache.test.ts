@@ -661,7 +661,7 @@ describe("createCoalescingStore", () => {
 describe("createConsolidatedStore", () => {
   const root = bundleFiles([
     {
-      key: "0",
+      index: 0,
       tsz: {
         kind: "continuous",
         id: "a",

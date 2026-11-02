@@ -34,21 +34,22 @@ describe.skipIf(!existsSync(BUNDLE))("acceptance: reference bundle", () => {
   test("lists the six channels and the recording's origin", async () => {
     const { client, infos } = await open();
 
-    expect(infos.map((info) => [info.key, info.kind])).toEqual([
-      ["0", "continuous"],
-      ["1", "continuous"],
-      ["2", "continuous"],
-      ["3", "event"],
-      ["4", "event"],
-      ["5", "event"],
+    expect(infos.map((info) => [info.index, info.kind])).toEqual([
+      [0, "continuous"],
+      [1, "continuous"],
+      [2, "continuous"],
+      [3, "event"],
+      [4, "event"],
+      [5, "event"],
     ]);
     const slow = infos[1]!;
     expect(slow.kind === "continuous" && slow.startUs).toBe(500_000);
     expect(slow.kind === "continuous" && slow.rateHz).toBe(256);
 
+    // The paper's bundle still writes the pre-1.0 `start` key for the reference
+    // time, which 1.0 does not define, so the reader ignores it.
     const recording = await client.recording();
-    expect(recording?.start).toBe("2023-11-14T22:13:20.000000+00:00");
-    expect(recording?.startUs).toBe(1_700_000_000_000_000);
+    expect(recording?.referenceTime).toBeUndefined();
     expect(recording?.subject).toMatchObject({ id: "sub-synth01" });
   });
 

@@ -40,45 +40,54 @@ test("resolves undefined when the bundle has no recording.json", async () => {
   await expect(readRecording(createMemoryStore({}))).resolves.toBeUndefined();
 });
 
-test("reads start and the identity objects", async () => {
+test("reads reference_time and the identity objects", async () => {
   const store = createMemoryStore({
     "/recording.json": JSON.stringify({
-      start: "2023-11-14T22:13:20.000000+00:00",
+      reference_time: "2023-11-14T22:13:20.000000+00:00",
       subject: { id: "sub-01" },
       session: { id: "ses-01" },
       source: { system: "synthetic" },
     }),
   });
   await expect(readRecording(store)).resolves.toEqual({
-    start: "2023-11-14T22:13:20.000000+00:00",
-    startUs: 1_700_000_000_000_000,
+    referenceTime: "2023-11-14T22:13:20.000000+00:00",
+    referenceTimeUs: 1_700_000_000_000_000,
     subject: { id: "sub-01" },
     session: { id: "ses-01" },
     source: { system: "synthetic" },
   });
 });
 
-test("accepts reference_time as the name of the origin", async () => {
-  // What timeseries-zarr-py writes for the same instant.
+test("keeps session.start_time inside session, where it places no data", async () => {
   const store = createMemoryStore({
     "/recording.json": JSON.stringify({
       reference_time: "1970-01-01T00:00:02Z",
-      session: { start_time: "1970-01-01T00:00:02Z" },
+      session: { start_time: "1970-01-01T00:00:01Z" },
     }),
   });
   await expect(readRecording(store)).resolves.toEqual({
-    start: "1970-01-01T00:00:02Z",
-    startUs: 2_000_000,
-    session: { start_time: "1970-01-01T00:00:02Z" },
+    referenceTime: "1970-01-01T00:00:02Z",
+    referenceTimeUs: 2_000_000,
+    session: { start_time: "1970-01-01T00:00:01Z" },
   });
 });
 
-test("reads a de-identified file with no start as an empty record", async () => {
+test("ignores keys the format does not define, including the pre-1.0 start", async () => {
+  const store = createMemoryStore({
+    "/recording.json": JSON.stringify({
+      start: "1970-01-01T00:00:02Z",
+      device: { model: "x" },
+    }),
+  });
+  await expect(readRecording(store)).resolves.toEqual({});
+});
+
+test("reads a de-identified file with no reference_time as an empty record", async () => {
   const store = createMemoryStore({ "/recording.json": "{}" });
   await expect(readRecording(store)).resolves.toEqual({});
 });
 
-test("rejects a file that is not a JSON object, a bad start, or a non-object field", async () => {
+test("rejects a file that is not a JSON object, a bad reference_time, or a non-object field", async () => {
   await expect(
     readRecording(createMemoryStore({ "/recording.json": "{nope" })),
   ).rejects.toThrow(/not valid JSON/);
@@ -86,11 +95,13 @@ test("rejects a file that is not a JSON object, a bad start, or a non-object fie
     readRecording(createMemoryStore({ "/recording.json": "[]" })),
   ).rejects.toThrow(/object/);
   await expect(
-    readRecording(createMemoryStore({ "/recording.json": '{"start": 5}' })),
-  ).rejects.toThrow(/start must be a string/);
+    readRecording(
+      createMemoryStore({ "/recording.json": '{"reference_time": 5}' }),
+    ),
+  ).rejects.toThrow(/reference_time must be a string/);
   await expect(
     readRecording(
-      createMemoryStore({ "/recording.json": '{"start": "noon"}' }),
+      createMemoryStore({ "/recording.json": '{"reference_time": "noon"}' }),
     ),
   ).rejects.toThrow(RangeError);
   await expect(

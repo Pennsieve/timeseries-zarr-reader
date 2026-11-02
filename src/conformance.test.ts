@@ -1,0 +1,317 @@
+/**
+ * Reads the conformance fixtures of the TS-Zarr specification and checks the reader
+ * returns the values their manifest states.
+ *
+ * `timeseries-zarr-py` publishes the manifest at `conformance/manifest.json` and
+ * builds the bundles beside it with `make fixtures`; they are not tracked in git.
+ * Skipped when they are not on disk. Set TSZ_CONFORMANCE_DIR to point at the
+ * directory, or check the py repository out beside this one and build them there.
+ */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, test } from "vitest";
+import { collect } from "./test-utils.js";
+import type { ChannelInfo, EventColumn } from "./index.js";
+import { openBundle, StreamingClient } from "./index.js";
+
+const DIR =
+  process.env.TSZ_CONFORMANCE_DIR ??
+  fileURLToPath(
+    new URL("../../timeseries-zarr-py/conformance", import.meta.url),
+  );
+
+interface ManifestContinuous {
+  index: number;
+  kind: "continuous";
+  name: string;
+  id: string;
+  unit: string;
+  rate_hz: number;
+  offset_us: number;
+  num_samples: number;
+  runs: number[][] | null;
+  samples: Array<{ index: number; value: number | null }>;
+  levels: Array<{
+    level: number;
+    period_us: number;
+    bins: number;
+    bin_values: Array<{
+      index: number;
+      min: number | null;
+      max: number | null;
+    }>;
+  }>;
+}
+
+interface ManifestEvent {
+  index: number;
+  kind: "event";
+  name: string;
+  id: string;
+  unit?: string;
+  label_names?: string[] | null;
+  num_labels: number;
+  max_duration_us: number | null;
+  num_events: number;
+  events: number[];
+  durations?: number[];
+  labels?: number[];
+  values?: number[];
+  text?: string[];
+  channels?: number[][];
+  waveform?: {
+    samples: number;
+    period_us: number;
+    event_sample: number;
+    waveforms: Array<Array<number | null>>;
+    waveform_mean: Array<Array<number | null>>;
+  };
+  columns: EventColumn[];
+  count_levels: Array<{
+    level: number;
+    period_us: number;
+    offset_us: number;
+    bins: number;
+    count: number[][];
+  }>;
+}
+
+interface Fixture {
+  path: string;
+  exercises: string;
+  version: string;
+  recording_json: Record<string, unknown> | null;
+  reader_must_reject: boolean;
+  channels?: Array<ManifestContinuous | ManifestEvent>;
+}
+
+interface Manifest {
+  spec_version: string;
+  fixtures: Record<string, Fixture>;
+}
+
+const MANIFEST = join(DIR, "manifest.json");
+const manifest: Manifest | undefined = existsSync(MANIFEST)
+  ? (JSON.parse(readFileSync(MANIFEST, "utf8")) as Manifest)
+  : undefined;
+const fixtures = Object.entries(manifest?.fixtures ?? {});
+const built = fixtures.every(([, fixture]) =>
+  existsSync(join(DIR, fixture.path, "zarr.json")),
+);
+
+/** The manifest writes NaN as null. */
+const number = (value: number | null): number => value ?? NaN;
+const numbers = (values: Array<number | null>): number[] => values.map(number);
+
+describe.skipIf(fixtures.length === 0 || !built)("conformance fixtures", () => {
+  const open = async (fixture: Fixture) =>
+    new StreamingClient({ store: await openBundle(join(DIR, fixture.path)) });
+
+  const idOf = (infos: ChannelInfo[], index: number): string =>
+    infos.find((info) => info.index === index)?.id ?? String(index);
+
+  async function checkContinuous(
+    client: StreamingClient,
+    infos: ChannelInfo[],
+    channel: ManifestContinuous,
+  ): Promise<void> {
+    const periodUs = 1e6 / channel.rate_hz;
+    const info = infos.find((candidate) => candidate.index === channel.index);
+    expect(info).toMatchObject({
+      kind: "continuous",
+      name: channel.name,
+      id: channel.id,
+      unit: channel.unit,
+      rateHz: channel.rate_hz,
+      startUs: channel.offset_us,
+      runs: channel.runs?.length ?? (channel.num_samples > 0 ? 1 : 0),
+    });
+    if (info?.kind !== "continuous") throw new Error("unreachable");
+    expect(info.endUs).toBeCloseTo(
+      channel.offset_us + channel.num_samples * periodUs,
+      6,
+    );
+
+    // 1. Raw samples, read whole.
+    if (channel.num_samples > 0) {
+      const [segment] = await collect(
+        client.query({
+          channels: [info.id],
+          startUs: info.startUs,
+          endUs: info.endUs,
+          pixelWidthUs: periodUs,
+          raw: true,
+        }),
+      );
+      expect(segment?.data.length).toBe(channel.num_samples);
+      for (const { index, value } of channel.samples) {
+        expect(segment!.data[index]).toBe(number(value));
+      }
+    }
+
+    // 2. Runs, exact to the microsecond.
+    const runs = await client.runs({ channel: info.id });
+    if (channel.runs === null) {
+      expect(runs).toHaveLength(channel.num_samples > 0 ? 1 : 0);
+    } else {
+      expect(runs).toHaveLength(channel.runs.length);
+      channel.runs.forEach(([firstSample, sampleCount, startUs], row) => {
+        expect(runs[row]).toMatchObject({ firstSample, sampleCount, startUs });
+        expect(runs[row]!.endUs).toBeCloseTo(
+          startUs! + sampleCount! * periodUs,
+          6,
+        );
+      });
+    }
+
+    // 3. Each level, selected by a pixel exactly one bin wide.
+    for (const level of channel.levels) {
+      const [segment] = await collect(
+        client.query({
+          channels: [info.id],
+          startUs: info.startUs,
+          endUs: info.endUs,
+          pixelWidthUs: level.period_us,
+        }),
+      );
+      expect(segment).toMatchObject({
+        isMinMax: true,
+        samplePeriodUs: level.period_us,
+        startUs: info.startUs,
+      });
+      expect(segment!.data.length).toBe(level.bins * 2);
+      for (const { index, min, max } of level.bin_values) {
+        expect(segment!.data[2 * index]).toBe(number(min));
+        expect(segment!.data[2 * index + 1]).toBe(number(max));
+      }
+    }
+  }
+
+  async function checkEvent(
+    client: StreamingClient,
+    infos: ChannelInfo[],
+    channel: ManifestEvent,
+  ): Promise<void> {
+    const info = infos.find((candidate) => candidate.index === channel.index);
+    expect(info).toMatchObject({
+      kind: "event",
+      name: channel.name,
+      id: channel.id,
+      eventCount: channel.num_events,
+      columns: channel.columns,
+      hasWaveformMean: channel.waveform?.waveform_mean !== undefined,
+      countLevels: channel.count_levels.length,
+    });
+    if (info?.kind !== "event") throw new Error("unreachable");
+    expect(info.unit).toBe(channel.unit);
+    expect(info.labelNames).toEqual(channel.label_names ?? undefined);
+    expect(info.maxDurationUs).toBe(channel.max_duration_us ?? undefined);
+
+    // 1. Every event, with every column, over a window around them all.
+    const first = channel.events[0] ?? 0;
+    const last = channel.events[channel.events.length - 1] ?? 0;
+    const [window] = await collect(
+      client.queryEvents({
+        channels: [info.id],
+        startUs: first - 1,
+        endUs: last + 1,
+      }),
+    );
+    expect(Array.from(window!.times)).toEqual(channel.events);
+    const column = <T>(name: EventColumn, read: () => T): T | undefined =>
+      channel.columns.includes(name) ? read() : undefined;
+    expect(column("durations", () => Array.from(window!.durations!))).toEqual(
+      channel.durations,
+    );
+    expect(column("labels", () => Array.from(window!.labels!))).toEqual(
+      channel.labels,
+    );
+    expect(column("values", () => Array.from(window!.values!))).toEqual(
+      channel.values,
+    );
+    expect(column("text", () => window!.text)).toEqual(channel.text);
+    expect(column("channels", () => window!.channels)).toEqual(
+      channel.channels?.map((indices) =>
+        indices.map((index) => idOf(infos, index)),
+      ),
+    );
+    const waveform = channel.waveform;
+    if (channel.columns.includes("waveforms") && channel.num_events > 0) {
+      expect(window!.waveforms).toMatchObject({
+        pointsPerEvent: waveform!.samples,
+        periodUs: waveform!.period_us,
+        eventSample: waveform!.event_sample,
+      });
+      expect(Array.from(window!.waveforms!.data)).toEqual(
+        waveform!.waveforms.flatMap(numbers),
+      );
+    }
+
+    // 2. The mean waveform per label.
+    const mean = await client.waveformMean({ channel: info.id });
+    if (waveform?.waveform_mean === undefined) {
+      expect(mean).toBeUndefined();
+    } else {
+      expect(mean).toMatchObject({
+        pointsPerEvent: waveform.samples,
+        periodUs: waveform.period_us,
+        eventSample: waveform.event_sample,
+      });
+      expect(Array.from(mean!.data)).toEqual(
+        waveform.waveform_mean.flatMap(numbers),
+      );
+    }
+
+    // 3. Each count level, whole, selected by a pixel one bin wide.
+    for (const level of channel.count_levels) {
+      const counts = await client.eventCounts({
+        channel: info.id,
+        startUs: level.offset_us,
+        endUs: level.offset_us + level.bins * level.period_us,
+        pixelWidthUs: level.period_us,
+      });
+      expect(counts).toMatchObject({
+        level: level.level,
+        startUs: level.offset_us,
+        periodUs: level.period_us,
+        labelCount: channel.num_labels,
+      });
+      expect(Array.from(counts.counts)).toEqual(level.count.flat());
+    }
+  }
+
+  for (const [name, fixture] of fixtures) {
+    test(name, async () => {
+      const client = await open(fixture);
+      if (fixture.reader_must_reject) {
+        await expect(client.channelInfo()).rejects.toThrow();
+        return;
+      }
+
+      // An invalid bundle a reader may still open lists no channel values.
+      const infos = await client.channelInfo();
+      if (fixture.channels === undefined) {
+        return;
+      }
+      expect(infos).toHaveLength(fixture.channels.length);
+      for (const channel of fixture.channels) {
+        if (channel.kind === "continuous") {
+          await checkContinuous(client, infos, channel);
+        } else {
+          await checkEvent(client, infos, channel);
+        }
+      }
+
+      const recording = await client.recording();
+      if (fixture.recording_json === null) {
+        expect(recording).toBeUndefined();
+      } else {
+        expect(recording?.referenceTime).toBe(
+          fixture.recording_json.reference_time,
+        );
+        expect(recording?.session).toEqual(fixture.recording_json.session);
+      }
+    });
+  }
+});

@@ -38,20 +38,23 @@ The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
 Returns a `ChannelInfo` array covering every channel in the bundle, in the bundle's
 order. `ChannelInfo` is a union discriminated on `kind`:
 
-- `ContinuousChannelInfo` (`kind: "continuous"`): `key`, `id`, `name`, `unit`, `rateHz`,
-  `startUs`, `endUs`, and an optional `provenance`. `endUs` is exclusive, one period
-  past the last sample.
-- `EventChannelInfo` (`kind: "event"`): `key`, `id`, `name`, `eventCount`, `columns`
+- `ContinuousChannelInfo` (`kind: "continuous"`): `index`, `id`, `name`, `unit`,
+  `rateHz`, `startUs`, `endUs`, `runs`, and an optional `provenance`. `endUs` is
+  exclusive, one period past the last sample of the channel's grid. `runs` is the
+  number of runs: 1 for a channel that never paused, 0 for an empty one;
+  [`runs()`](#runsoptions) reads them.
+- `EventChannelInfo` (`kind: "event"`): `index`, `id`, `name`, `eventCount`, `columns`
   (the optional per-event columns the channel stores, from `durations`, `labels`,
   `values`, `text`, `channels`, and `waveforms`), `hasWaveformMean`, `countLevels` (the
   number of count levels, 0 when none), and optional `unit`, `labelNames`,
   `maxDurationUs`, and `provenance`.
 
-`key` is the channel's group name in the bundle, a decimal integer. `id` is the
-producer's id when the bundle records one, and otherwise the key; it is what every
-query takes. Ids and keys therefore share one namespace: a bundle where two channels
-end up with the same id, including a producer id that matches another channel's key,
-is rejected when it is opened. `timeseries-zarr-py` writes an id on every channel and
+`index` is the channel's integer group name in the bundle, `0` through `C - 1`, and
+the bit that names it in an event's `channels` column. `id` is the producer's id when
+the bundle records one, and otherwise the index as a string; it is what every query
+takes. Ids and indices therefore share one namespace: a bundle where two channels end
+up with the same id, including a producer id that matches another channel's index, is
+rejected when it is opened. `timeseries-zarr-py` writes an id on every channel and
 refuses duplicates, so its bundles are never rejected for this.
 
 ## `recording()`
@@ -59,12 +62,14 @@ refuses duplicates, so its bundles are never rejected for this.
 Returns a promise for the bundle's `recording.json` as a `RecordingInfo`, or `undefined`
 when the bundle has none. The file is read once and cached for the client's lifetime.
 
-`start` is the origin's wall-clock time as written, an RFC 3339 timestamp, and
-`startUs` the same instant in microseconds since the Unix epoch. `subject`, `session`,
-and `source` are the producer-defined identity objects. Each is absent when the file
-omits it. A bundle de-identified by deleting `recording.json` resolves to `undefined`;
-one that keeps the file but strips its keys resolves to an empty record. The origin is
-also accepted under the key `reference_time`, which `timeseries-zarr-py` writes.
+`referenceTime` is the origin's wall-clock time as written, the file's
+`reference_time`, an RFC 3339 timestamp, and `referenceTimeUs` the same instant in
+microseconds since the Unix epoch. `subject`, `session`, and `source` are the
+producer-defined identity objects, passed through as written; `session.start_time`,
+when present, is when acquisition began and places no data. Each is absent when the
+file omits it. Keys the format does not define are ignored. A bundle de-identified by
+deleting `recording.json` resolves to `undefined`; one that keeps the file but strips
+its keys resolves to an empty record.
 
 ## `query(options)`
 
@@ -95,10 +100,10 @@ Passing both or neither throws. The rest of the options:
 ### Level selection
 
 The reader picks the coarsest pyramid level whose bins fit within one pixel, falling
-back to the finest level when none fits. Segments from a coarse level carry interleaved
-`[min, max, ...]` envelope pairs from the level's `minmax` member and set `isMinMax`;
-segments from the raw level carry samples. A level's `mean` and `var` members are not
-read.
+back to the finest level when none fits. Levels are ordered by their `period_us`; the
+factor between consecutive levels is whatever the producer chose, and nothing assumes 4. Segments from a coarse level carry interleaved `[min, max, ...]` envelope pairs
+from the level's `minmax` member and set `isMinMax`; segments from the raw level carry
+samples. A level's `mean` and `var` members are not read.
 
 A montage, a filter, or `raw: true` forces a read of the raw level. Coarse levels are
 already decimated, so they cannot be filtered or differenced exactly.
@@ -179,6 +184,11 @@ which is what the format defines for a span that was never recorded. A resampled
 bucket with no finite value comes back as a `[NaN, NaN]` pair, so gaps stay visible at
 every zoom.
 
+Every sample is placed on the channel's grid, `startUs + i * samplePeriodUs`. A channel
+that paused and resumed off its grid stores the exact resume time in its `runs` table,
+and the sample after the pause then sits up to one sample period from its exact time.
+[`runs()`](#runsoptions) gives the exact times when a view needs them.
+
 `query()` is an async generator. Validation happens on the first iteration, not on the
 call, so wrap the `for await` loop in `try`/`catch` rather than the call itself. A
 non-positive `pixelWidthUs`, a window with `endUs < startUs`, and an already-aborted
@@ -207,11 +217,12 @@ order. Takes `channels`, `startUs`, `endUs`, an optional `pixelWidthUs`, an opti
 `columns`, an optional `priority` (defaulting to `"viewport"`), and an optional
 `signal`.
 
-An event is in the window when it starts before `endUs` and ends at or after `startUs`.
-A point event ends when it starts. An interval that opened before the window and is
-still running is included: the reader searches back from `startUs` by the channel's
-`maxDurationUs`, or from the channel's first event when it stores durations but
-declares no bound.
+An event is in the window when its span overlaps `[startUs, endUs)`. A point event is
+the instant of its time, and an interval covers the half-open span `[t, t + d)`, so an
+interval that opened before the window and is still running is included and one that
+ended exactly at `startUs` is not. Finding the open intervals means searching back from
+`startUs` by the channel's `maxDurationUs`, or from the channel's first event when it
+stores durations but declares no bound.
 
 Each window holds `times`, the events' onsets in ascending order, plus one entry per
 column read. Index `i` of every column is event `i`. The columns:
@@ -221,9 +232,9 @@ column read. Index `i` of every column is event `i`. The columns:
 - `values`: `Float64Array`, one measurement per event in the channel's `unit`.
 - `text`: one decoded string per event. Free text, or whatever the producer wrote, such
   as a JSON object per detector hit.
-- `channels`: the ids of the channels each event applies to. An empty list means the
-  whole recording. The bundle stores channel keys; the reader resolves them to ids,
-  and returns a key that names no channel in the bundle as the key itself.
+- `channels`: the ids of the channels each event applies to. An empty list names no
+  channel. The bundle stores channel indices; the reader resolves them to ids, and
+  returns an index that names no channel in the bundle as the index itself.
 - `waveforms`: a `Waveforms` record holding `pointsPerEvent`, `periodUs`,
   `eventSample` (the snippet index recorded at the event time), and `data`, one row of
   `pointsPerEvent` samples per event, flattened row-major.
@@ -270,10 +281,30 @@ an optional `priority` (defaulting to `"background"`), and an optional `signal`.
 
 Spans come from the coarsest pyramid level, so their edges align to that level's bins.
 A bin is populated when the level's `count` member is above zero, or, on a level
-without `count`, when its min/max is finite. The difference matters: one bad sample
-makes a bin's min/max NaN at every level above it, so without `count` that bin reads as
-a gap, and with it the bin reads as covered. Gaps no wider than `gapThresholdUs` are
-bridged into one span. The default of 0 splits on every gap.
+without `count`, when its min/max is finite. In a 1.0 bundle the two agree: every
+statistic covers a bin's finite samples only, and a bin is NaN only when it recorded
+none. Gaps no wider than `gapThresholdUs` are bridged into one span. The default of 0
+splits on every gap. The edges of a pause are exact in [`runs()`](#runsoptions), not
+here.
+
+## `runs(options)`
+
+Returns a promise for a continuous channel's runs in time order, each a `Run` with
+`firstSample`, `sampleCount`, `startUs`, and `endUs`. Takes `channel`, an optional
+`priority` (defaulting to `"viewport"`), and an optional `signal`.
+
+A run is a span of samples recorded one period apart. A recording that paused and
+resumed off its sample grid stores one row per run with the exact resume time, which
+the grid can only place to within one sample period. Sample `firstSample + i` of a
+run is at `startUs + i * samplePeriod`, and `endUs` is one period past its last
+sample, exclusive. A channel without a `runs` table is one run from `startUs` over
+every sample, and an empty channel has none. The table is read once per channel and
+cached for the client's lifetime.
+
+Rejects for an unknown id, an event channel, or a table that breaks the format's
+rules: row 0 must start the channel at `startUs`, runs must be in order without
+overlap and end at the last sample, and each must start within one sample period of
+its grid sample. The error names the channel and the row.
 
 ## `openBundle(url)`
 

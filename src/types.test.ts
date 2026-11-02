@@ -31,17 +31,18 @@ test("Segment has the documented shape", () => {
 test("ChannelInfo discriminates continuous and event channels on kind", () => {
   const continuous: ChannelInfo = {
     kind: "continuous",
-    key: "0",
+    index: 0,
     id: "ch1",
     name: "Fp1",
     unit: "uV",
     rateHz: 250,
     startUs: 0,
     endUs: 4_000_000,
+    runs: 1,
   };
   const event: ChannelInfo = {
     kind: "event",
-    key: "1",
+    index: 1,
     id: "marks",
     name: "marks",
     eventCount: 3,
@@ -124,10 +125,10 @@ test("EventCounts and RecordingInfo have the documented shapes", () => {
   };
   expectTypeOf(counts.counts).toEqualTypeOf<Uint32Array>();
   const recording: RecordingInfo = {
-    start: "1970-01-01T00:00:00Z",
-    startUs: 0,
+    referenceTime: "1970-01-01T00:00:00Z",
+    referenceTimeUs: 0,
   };
-  expectTypeOf(recording.startUs).toEqualTypeOf<number | undefined>();
+  expectTypeOf(recording.referenceTimeUs).toEqualTypeOf<number | undefined>();
 });
 
 test("ReadPriority has the documented values", () => {

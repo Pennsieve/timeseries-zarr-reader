@@ -1,17 +1,12 @@
 {
   "attributes": {
     "tsz": {
-      "kind": "event",
-      "name": "Unit A",
-      "id": "unitA",
-      "label_names": [
-        "u0",
-        "u1",
-        "u2"
-      ],
-      "provenance": {
-        "software": "generate-test-bundle.py"
-      }
+      "kind": "continuous",
+      "name": "Paused A",
+      "id": "pausedA",
+      "rate_hz": 1000.0,
+      "offset_us": 0,
+      "unit": "uV"
     }
   },
   "zarr_format": 3,
