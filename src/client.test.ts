@@ -1713,6 +1713,32 @@ describe("runs", () => {
     }
   });
 
+  test("rejects only the caller that aborts, and honours a later caller's signal", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles([PAUSED, PLAIN, EMPTY, EVENTS])),
+    );
+    const client = new StreamingClient({ store: counting.store });
+
+    const first = new AbortController();
+    const second = new AbortController();
+    const firstCall = client.runs({ channel: "p", signal: first.signal });
+    const secondCall = client.runs({ channel: "p", signal: second.signal });
+    const thirdCall = client.runs({ channel: "p" });
+    first.abort(new Error("first gave up"));
+
+    await expect(firstCall).rejects.toThrow(/first gave up/);
+    expect((await secondCall).length).toBe(2);
+    expect((await thirdCall).length).toBe(2);
+    expect(counting.reads.get("/0/runs/c/0/0")).toBe(1);
+
+    // A caller joining after the read is cached can still be aborted.
+    const late = new AbortController();
+    const lateCall = client.runs({ channel: "q", signal: late.signal });
+    late.abort(new Error("late gave up"));
+    await expect(lateCall).rejects.toThrow(/late gave up/);
+    expect((await client.runs({ channel: "q" })).length).toBe(1);
+  });
+
   test("rejects an event channel, an unknown id, and an aborted signal", async () => {
     const client = makeClient([PAUSED, PLAIN, EMPTY, EVENTS]);
     await expect(client.runs({ channel: "ev" })).rejects.toThrow(
