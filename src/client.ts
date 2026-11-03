@@ -319,17 +319,20 @@ export class StreamingClient {
    * up to one period from its exact time; this is where the exact times live. Read
    * once per channel and cached for the client's lifetime. Rejects for an unknown
    * channel id, an event channel, or a `runs` table that breaks the format's rules;
-   * the next call retries.
+   * the next call retries. An aborted caller is rejected and the read finishes for
+   * the others.
    */
   async runs(params: RunOptions): Promise<Run[]> {
     params.signal?.throwIfAborted();
     let pending = this.#runs.get(params.channel);
     if (pending === undefined) {
+      // The read carries no signal. Callers share it, so one caller giving up must
+      // not reject the rest, and the table is small enough to let it finish.
       pending = this.#loadBundle()
         .then(({ catalog, store }) => {
           const entry = continuousEntry(catalog, params.channel);
           return this.#limit(params.priority ?? "viewport", () =>
-            readRuns(store, entry, toStoreOptions(params.signal)),
+            readRuns(store, entry),
           );
         })
         .catch((error: unknown) => {
@@ -338,7 +341,9 @@ export class StreamingClient {
         });
       this.#runs.set(params.channel, pending);
     }
-    return pending;
+    return params.signal === undefined
+      ? pending
+      : abortable(pending, params.signal);
   }
 
   /**
@@ -824,6 +829,19 @@ function unwrapRead(result: SettledRead): Float64Array {
 
 function toStoreOptions(signal?: AbortSignal): StoreOptions | undefined {
   return signal === undefined ? undefined : { signal };
+}
+
+/** Settles with `promise`, or rejects as soon as `signal` aborts. The work runs on. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 /**
