@@ -33,4 +33,11 @@ jobs:
             exit 1
           fi
       # prepublishOnly runs the full gate (lint, format, typecheck, tests, build).
-      - run: npm publish --provenance
+      # Prereleases publish under their own dist-tag (1.0.0-beta.0 -> beta), not latest.
+      - name: Publish
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) pre="${version#*-}"; npm publish --provenance --tag "${pre%%.*}" ;;
+            *) npm publish --provenance ;;
+          esac
