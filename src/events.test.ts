@@ -115,7 +115,7 @@ async function openEvents(
 }> {
   const store = createMemoryStore(bundleFiles(channels));
   const catalog = await readCatalog(store);
-  const entry = catalog.byId.get(id);
+  const entry = catalog.byId.get(id)?.[0];
   if (entry?.kind !== "event") {
     throw new Error(`fixture has no event channel ${id}`);
   }
@@ -334,7 +334,7 @@ describe("queryEventChannel: intervals and text", () => {
   test("resolves the channels column to channel ids, keeping an unknown index as is", async () => {
     const store = createMemoryStore(bundleFiles([CONTINUOUS, MARKS]));
     const catalog = await readCatalog(store);
-    const entry = catalog.byId.get("m")!;
+    const entry = catalog.byId.get("m")![0]!;
     if (entry.kind !== "event") throw new Error("unreachable");
 
     const window = await queryEventChannel(

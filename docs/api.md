@@ -50,13 +50,17 @@ order. `ChannelInfo` is a union discriminated on `kind`:
   number of count levels, 0 when none), and optional `unit`, `labelNames`,
   `maxDurationUs`, and `provenance`.
 
-`index` is the channel's integer group name in the bundle, `0` through `C - 1`, and
-the bit that names it in an event's `channels` column. `id` is the producer's id when
-the bundle records one, and otherwise the index as a string; it is what every query
-takes. Ids and indices therefore share one namespace: a bundle where two channels end
-up with the same id, including a producer id that matches another channel's index, is
-rejected when it is opened. `timeseries-zarr-py` writes an id on every channel and
-refuses duplicates, so its bundles are never rejected for this.
+`index` is the channel's integer group name in the bundle, `0` through `C - 1`,
+and the bit that names it in an event's `channels` column. `id` is the
+producer's id when the bundle records one, and otherwise the index as a string;
+it is what every query takes. Ids and indices share one namespace, so a producer
+id can match another channel's index.
+
+The format does not require ids to be unique, and the reader opens a bundle
+where channels share one. `channelInfo()` lists every such channel. A query that
+names a shared id rejects with an error that lists the channel indices, and a
+query that names an unknown id rejects too. `timeseries-zarr-py` writes an id on
+every channel and refuses duplicates.
 
 ## `recording()`
 

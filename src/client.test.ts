@@ -565,6 +565,43 @@ describe("query", () => {
     ).rejects.toThrow(/no channel with id nope/);
   });
 
+  describe("channels that share an id", () => {
+    const twin = (index: number, base: number): FixtureChannel => ({
+      index,
+      tsz: tsz("same", `Twin ${index}`, 1000),
+      raw: Array.from({ length: 8 }, (_, i) => base + i),
+    });
+    const makeTwinClient = () =>
+      new StreamingClient({
+        store: createMemoryStore(bundleFiles([twin(0, 0), twin(1, 100)])),
+      });
+
+    test("lists every channel that carries the id", async () => {
+      const infos = await makeTwinClient().channelInfo();
+
+      expect(infos.map((info) => [info.index, info.id])).toEqual([
+        [0, "same"],
+        [1, "same"],
+      ]);
+    });
+
+    test("rejects a query that names the shared id, naming both indices", async () => {
+      const client = makeTwinClient();
+      const window = {
+        startUs: 1_000_000,
+        endUs: 1_008_000,
+        pixelWidthUs: 1000,
+      };
+
+      await expect(
+        collect(client.query({ channels: ["same"], ...window })),
+      ).rejects.toThrow(/channel id same is shared by channels 0, 1/);
+      await expect(
+        collect(client.queryEvents({ channels: ["same"], ...window })),
+      ).rejects.toThrow(/channel id same is shared by channels 0, 1/);
+    });
+  });
+
   test("rejects an event channel", async () => {
     const client = makeClient();
     await expect(

@@ -103,15 +103,16 @@ export type ChannelEntry = ContinuousEntry | EventEntry;
 /**
  * A bundle's channels plus two indexes.
  *
- * `byId` holds the same entry objects as `channels`, keyed by channel id. `idByIndex`
- * maps a channel index to its id, which is how an event's `channels` column names
- * the channels it applies to.
+ * `byId` holds the same entry objects as `channels`, keyed by channel id. The format
+ * does not require ids to be unique, so each id maps to every channel that carries it,
+ * in channel index order. `idByIndex` maps a channel index to its id, which is how an
+ * event's `channels` column names the channels it applies to.
  */
 export interface BundleCatalog {
   /** The bundle's `tsz.version`. */
   readonly version: string;
   readonly channels: ChannelEntry[];
-  readonly byId: Map<string, ChannelEntry>;
+  readonly byId: Map<string, ChannelEntry[]>;
   readonly idByIndex: Map<number, string>;
 }
 
@@ -714,7 +715,7 @@ function readVersion(root: Json): string {
  * Throws for a missing `/zarr.json`, invalid JSON, a root that is not a Zarr v3 group,
  * a missing or non-1.x `tsz.version`, missing `consolidated_metadata`, a channel or
  * level missing an array or attribute its kind requires, a column whose length is
- * not the channel's event count, or a duplicate channel id.
+ * not the channel's event count. Channels may share an id.
  */
 export async function readCatalog(store: Store): Promise<BundleCatalog> {
   const root = await readRoot(store);
@@ -769,7 +770,7 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
 
   // 2. Read each channel group by its kind.
   const channels: ChannelEntry[] = [];
-  const byId = new Map<string, ChannelEntry>();
+  const byId = new Map<string, ChannelEntry[]>();
   const idByIndex = new Map<number, string>();
 
   for (const [name, group] of channelGroups) {
@@ -789,17 +790,13 @@ export async function readCatalog(store: Store): Promise<BundleCatalog> {
         ? readContinuous(index, tsz, channelNodes)
         : readEvent(index, tsz, channelNodes);
 
-    // Ids are the query handle, so two channels cannot share one. A channel with no id
-    // uses its index, so a producer id that matches another channel's index collides
-    // too.
-    const claimed = byId.get(entry.info.id);
-    if (claimed !== undefined) {
-      throw new Error(
-        `duplicate channel id ${entry.info.id}: ${claimed.path} and ${entry.path}`,
-      );
-    }
     channels.push(entry);
-    byId.set(entry.info.id, entry);
+    const sharing = byId.get(entry.info.id);
+    if (sharing === undefined) {
+      byId.set(entry.info.id, [entry]);
+    } else {
+      sharing.push(entry);
+    }
     idByIndex.set(index, entry.info.id);
   }
 

@@ -284,7 +284,7 @@ describe("readCatalog: continuous channels", () => {
     expect(entry.info.id).toBe("4");
     expect(entry.info.index).toBe(4);
     expect(entry.info.kind === "continuous" && entry.info.startUs).toBe(0);
-    expect(catalog.byId.get("4")).toBe(entry);
+    expect(catalog.byId.get("4")).toEqual([entry]);
     expect(catalog.idByIndex.get(4)).toBe("4");
   });
 
@@ -466,14 +466,16 @@ describe("readCatalog: continuous channels", () => {
     );
   });
 
-  test("rejects two channels with the same id", async () => {
-    const store = storeOf([
-      continuousChannel(),
-      continuousChannel({ index: 1 }),
-    ]);
-    await expect(readCatalog(store)).rejects.toThrow(
-      /duplicate channel id ch-1: \/0 and \/1/,
+  test("opens two channels that share an id", async () => {
+    const catalog = await readCatalog(
+      storeOf([continuousChannel(), continuousChannel({ index: 1 })]),
     );
+    expect(catalog.channels.map((entry) => entry.info.index)).toEqual([0, 1]);
+    expect(catalog.byId.get("ch-1")).toEqual(catalog.channels);
+    expect([...catalog.idByIndex]).toEqual([
+      [0, "ch-1"],
+      [1, "ch-1"],
+    ]);
   });
 });
 
@@ -644,7 +646,7 @@ describe("readCatalog: event channels", () => {
   test("enumerates a minimal event channel", async () => {
     const catalog = await readCatalog(storeOf([eventChannel()]));
 
-    const entry = catalog.byId.get("ch-9");
+    const entry = catalog.byId.get("ch-9")?.[0];
     expect(entry).toBeDefined();
     expect(entry!.kind).toBe("event");
     expect(entry!.info).toEqual({
@@ -701,7 +703,7 @@ describe("readCatalog: event channels", () => {
       ]),
     );
 
-    const entry = catalog.byId.get("det")!;
+    const entry = catalog.byId.get("det")![0]!;
     expect(entry.info).toEqual({
       kind: "event",
       index: 2,
