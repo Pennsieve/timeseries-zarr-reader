@@ -54,8 +54,9 @@ export interface ContinuousChannelInfo extends ChannelBase {
   readonly startUs: number;
   /**
    * Exclusive end of the channel's sample grid: one sample period past the last
-   * grid sample. On a channel with more than one run the last run ends within one
-   * sample period of this; `runs()` gives the exact end.
+   * grid sample, rounded up to a whole microsecond. On a channel with more than
+   * one run the last run ends within one sample period of this; `runs()` gives the
+   * exact end.
    */
   readonly endUs: number;
   /**
@@ -80,7 +81,10 @@ export interface Run {
   readonly sampleCount: number;
   /** Exact time of the first sample. */
   readonly startUs: number;
-  /** Exclusive end of the run: one sample period past its last sample. */
+  /**
+   * Exclusive end of the run: one sample period past its last sample, rounded up
+   * to a whole microsecond.
+   */
   readonly endUs: number;
 }
 

@@ -5,7 +5,7 @@ import type {
   FixtureEvent,
 } from "./test-utils.js";
 import { bundleFiles, createMemoryStore } from "./test-utils.js";
-import { binRange, readCatalog, selectLevel } from "./catalog.js";
+import { readCatalog, selectLevel } from "./catalog.js";
 
 const continuousTsz = {
   kind: "continuous",
@@ -134,120 +134,6 @@ describe("selectLevel", () => {
   });
 });
 
-describe("binRange", () => {
-  /** Ten 1000 us bins anchored away from time zero. */
-  const GRID_START_US = 1_000_000;
-  const grid = { startUs: GRID_START_US, periodUs: 1000, binCount: 10 };
-  const at = (bin: number) => GRID_START_US + bin * 1000;
-
-  test("returns the bins a window overlaps", () => {
-    expect(binRange(grid, at(2), at(5))).toEqual({ start: 2, end: 5 });
-  });
-
-  test("includes a bin that overlaps the window only in part", () => {
-    expect(binRange(grid, at(1) + 500, at(3) + 500)).toEqual({
-      start: 1,
-      end: 4,
-    });
-  });
-
-  test("excludes a bin starting exactly at endUs", () => {
-    expect(binRange(grid, at(0), at(3))).toEqual({ start: 0, end: 3 });
-  });
-
-  test("clamps a window that overruns the level at both ends", () => {
-    expect(binRange(grid, 0, at(50))).toEqual({ start: 0, end: 10 });
-  });
-
-  test("returns an empty range for a window outside the level", () => {
-    expect(binRange(grid, 0, 500_000)).toEqual({ start: 0, end: 0 });
-    expect(binRange(grid, at(20), at(30))).toEqual({ start: 10, end: 10 });
-  });
-
-  test("returns the single bin holding a window narrower than one bin", () => {
-    expect(binRange(grid, at(4) + 100, at(4) + 200)).toEqual({
-      start: 4,
-      end: 5,
-    });
-  });
-
-  test("returns an empty range for a zero-width window", () => {
-    expect(binRange(grid, at(3), at(3))).toEqual({ start: 3, end: 3 });
-  });
-
-  test("returns an empty range for a level with no bins", () => {
-    expect(binRange({ ...grid, binCount: 0 }, at(0), at(5))).toEqual({
-      start: 0,
-      end: 0,
-    });
-  });
-
-  test("handles a grid and a window below zero", () => {
-    // A channel that starts before the bundle's origin has a negative offset.
-    const early = { startUs: -5000, periodUs: 1000, binCount: 10 };
-    expect(binRange(early, -3000, -1000)).toEqual({ start: 2, end: 4 });
-    expect(binRange(early, -3500, 500)).toEqual({ start: 1, end: 6 });
-  });
-
-  test("rejects a window whose end precedes its start", () => {
-    expect(() => binRange(grid, at(5), at(2))).toThrow(RangeError);
-  });
-
-  test("rejects a non-positive bin period", () => {
-    expect(() => binRange({ ...grid, periodUs: 0 }, at(0), at(5))).toThrow(
-      RangeError,
-    );
-  });
-
-  test("anchors bins to a grid whose start is not a multiple of its period", () => {
-    const offGrid = { startUs: 1_000_123, periodUs: 1000, binCount: 10 };
-    const windows: Array<{
-      windowStartUs: number;
-      windowEndUs: number;
-      range: { start: number; end: number };
-      /** Bundle time of the first returned bin. */
-      startBinUs: number;
-    }> = [
-      // Both edges on the grid's own bin boundaries.
-      {
-        windowStartUs: 1_002_123,
-        windowEndUs: 1_005_123,
-        range: { start: 2, end: 5 },
-        startBinUs: 1_002_123,
-      },
-      // Whole-millisecond edges, which fall mid-bin on this grid.
-      {
-        windowStartUs: 1_002_000,
-        windowEndUs: 1_005_000,
-        range: { start: 1, end: 5 },
-        startBinUs: 1_001_123,
-      },
-      // Starts more than one period before the grid.
-      {
-        windowStartUs: 998_000,
-        windowEndUs: 1_000_500,
-        range: { start: 0, end: 1 },
-        startBinUs: 1_000_123,
-      },
-      // Narrower than one bin, inside a bin.
-      {
-        windowStartUs: 1_004_500,
-        windowEndUs: 1_004_600,
-        range: { start: 4, end: 5 },
-        startBinUs: 1_004_123,
-      },
-    ];
-
-    for (const { windowStartUs, windowEndUs, range, startBinUs } of windows) {
-      const returned = binRange(offGrid, windowStartUs, windowEndUs);
-      expect(returned).toEqual(range);
-      expect(offGrid.startUs + returned.start * offGrid.periodUs).toBe(
-        startBinUs,
-      );
-    }
-  });
-});
-
 describe("readCatalog: the root", () => {
   test("records the bundle's version", async () => {
     const catalog = await readCatalog(storeOf([continuousChannel()]));
@@ -343,11 +229,24 @@ describe("readCatalog: continuous channels", () => {
     });
     if (entry.kind !== "continuous") throw new Error("unreachable");
     expect(entry.levels).toEqual([
-      { path: "/0/raw", periodUs: 1000, binCount: 400, isMinMax: false },
-      { path: "/0/1/minmax", periodUs: 4000, binCount: 100, isMinMax: true },
+      {
+        path: "/0/raw",
+        periodUs: 1000,
+        samplesPerBin: 1,
+        binCount: 400,
+        isMinMax: false,
+      },
+      {
+        path: "/0/1/minmax",
+        periodUs: 4000,
+        samplesPerBin: 4,
+        binCount: 100,
+        isMinMax: true,
+      },
       {
         path: "/0/2/minmax",
         periodUs: 16_000,
+        samplesPerBin: 16,
         binCount: 25,
         isMinMax: true,
         countPath: "/0/2/count",
@@ -430,6 +329,7 @@ describe("readCatalog: continuous channels", () => {
     expect(entry.levels[1]).toEqual({
       path: "/0/1/minmax",
       periodUs: 4000,
+      samplesPerBin: 4,
       binCount: 100,
       isMinMax: true,
     });
@@ -443,7 +343,13 @@ describe("readCatalog: continuous channels", () => {
     if (entry.kind !== "continuous") throw new Error("unreachable");
     expect(entry.info.endUs).toBe(entry.info.startUs);
     expect(entry.levels).toEqual([
-      { path: "/0/raw", periodUs: 1000, binCount: 0, isMinMax: false },
+      {
+        path: "/0/raw",
+        periodUs: 1000,
+        samplesPerBin: 1,
+        binCount: 0,
+        isMinMax: false,
+      },
     ]);
   });
 
@@ -568,6 +474,169 @@ describe("readCatalog: continuous channels", () => {
     await expect(readCatalog(store)).rejects.toThrow(
       /duplicate channel id ch-1: \/0 and \/1/,
     );
+  });
+});
+
+describe("readCatalog: level structure", () => {
+  const levelsOf = async (
+    levels: Array<{ periodUs: number; width: number }>,
+    over: Partial<FixtureContinuous> = {},
+  ) => {
+    const raw = over.raw ?? RAW;
+    return readCatalog(
+      storeOf([
+        continuousChannel({
+          raw,
+          levels: levels.map(({ periodUs, width }) => ({
+            periodUs,
+            pairs: pairsOf(raw, width),
+          })),
+          ...over,
+        }),
+      ]),
+    );
+  };
+
+  test("derives each level's width in samples from its period", async () => {
+    const catalog = await levelsOf([
+      { periodUs: 2000, width: 2 },
+      { periodUs: 6000, width: 6 },
+    ]);
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.levels.map((level) => level.samplesPerBin)).toEqual([1, 2, 6]);
+    expect(entry.levels.map((level) => level.binCount)).toEqual([400, 200, 67]);
+  });
+
+  test("counts a short last bin", async () => {
+    const raw = Array.from({ length: 401 }, (_, i) => i);
+    const catalog = await levelsOf([{ periodUs: 4000, width: 4 }], { raw });
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.levels[1]!.binCount).toBe(101);
+  });
+
+  test("accepts a period that carries rounding error at 30000 Hz", async () => {
+    const raw = Array.from({ length: 10_000 }, (_, i) => i);
+    const catalog = await levelsOf(
+      [
+        { periodUs: (4 * 1e6) / 30_000, width: 4 },
+        { periodUs: 136_533.33333333334, width: 4096 },
+      ],
+      { raw, tsz: { ...continuousTsz, rate_hz: 30_000 } },
+    );
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.levels.map((level) => level.samplesPerBin)).toEqual([
+      1, 4, 4096,
+    ]);
+    expect(entry.levels.map((level) => level.binCount)).toEqual([
+      10_000, 2500, 3,
+    ]);
+  });
+
+  test("rejects levels numbered with a gap", async () => {
+    const { root, files } = rootOf([continuousChannel()]);
+    const { metadata } = root.consolidated_metadata;
+    for (const key of Object.keys(metadata)) {
+      if (key.startsWith("0/2")) {
+        metadata[key.replace("0/2", "0/3")] = metadata[key]!;
+        delete metadata[key];
+      }
+    }
+    files["/zarr.json"] = JSON.stringify(root);
+    await expect(readCatalog(createMemoryStore(files))).rejects.toThrow(
+      /channel \/0: levels must be numbered from 1 with no gap \(got 1, 3\)/,
+    );
+  });
+
+  test("rejects a period that is not a whole number of samples", async () => {
+    await expect(levelsOf([{ periodUs: 4500, width: 4 }])).rejects.toThrow(
+      /level \/0\/1: tsz\.period_us must be a whole number of samples/,
+    );
+  });
+
+  test("rejects a level one sample wide", async () => {
+    await expect(levelsOf([{ periodUs: 1000, width: 1 }])).rejects.toThrow(
+      /level \/0\/1: tsz\.period_us must be a whole number of samples from 2/,
+    );
+  });
+
+  test("rejects a level 2^32 samples wide", async () => {
+    const raw = [1, 2, 3];
+    await expect(
+      readCatalog(
+        storeOf([
+          continuousChannel({
+            raw,
+            levels: [{ periodUs: 2 ** 32 * 1000, pairs: [1, 3] }],
+          }),
+        ]),
+      ),
+    ).rejects.toThrow(/level \/0\/1: tsz\.period_us must be a whole number/);
+  });
+
+  test("rejects a level that is not a multiple of the level before it", async () => {
+    await expect(
+      levelsOf([
+        { periodUs: 4000, width: 4 },
+        { periodUs: 6000, width: 6 },
+      ]),
+    ).rejects.toThrow(/level \/0\/2: tsz\.period_us must be a multiple/);
+  });
+
+  test("rejects a level less than twice as wide as the level before it", async () => {
+    await expect(
+      levelsOf([
+        { periodUs: 4000, width: 4 },
+        { periodUs: 4000, width: 4 },
+      ]),
+    ).rejects.toThrow(/level \/0\/2: tsz\.period_us must be a multiple/);
+  });
+
+  test("rejects a minmax array with the wrong number of bins", async () => {
+    const short = pairsOf(RAW, 4).slice(0, -2);
+    await expect(
+      readCatalog(
+        storeOf([
+          continuousChannel({ levels: [{ periodUs: 4000, pairs: short }] }),
+        ]),
+      ),
+    ).rejects.toThrow(/level \/0\/1 has 100 bins but minmax has shape/);
+  });
+
+  test("rejects a member with the wrong number of bins", async () => {
+    for (const member of ["count", "mean", "var"] as const) {
+      const { root, files } = rootOf([
+        continuousChannel({
+          levels: [
+            {
+              periodUs: 4000,
+              pairs: pairsOf(RAW, 4),
+              [member]: new Array<number>(100).fill(1),
+            },
+          ],
+        }),
+      ]);
+      root.consolidated_metadata.metadata[`0/1/${member}`]!.shape = [99];
+      files["/zarr.json"] = JSON.stringify(root);
+      await expect(readCatalog(createMemoryStore(files))).rejects.toThrow(
+        new RegExp(`level /0/1 has 100 bins but ${member} has shape`),
+      );
+    }
+  });
+
+  test("rejects a level on a channel with no samples", async () => {
+    await expect(
+      levelsOf([{ periodUs: 4000, width: 4 }], { raw: [] }),
+    ).rejects.toThrow(/channel \/0 has no samples, so it must have no levels/);
+  });
+
+  test("accepts a level without count", async () => {
+    const catalog = await levelsOf([{ periodUs: 4000, width: 4 }]);
+    const entry = catalog.channels[0]!;
+    if (entry.kind !== "continuous") throw new Error("unreachable");
+    expect(entry.levels[1]!.countPath).toBeUndefined();
   });
 });
 
@@ -987,13 +1056,13 @@ describe("readCatalog: the rules of 1.0", () => {
     expect(catalog.channels.map((entry) => entry.path)).toEqual(["/0"]);
   });
 
-  test("accepts levels whose factor is not 4, sorted by period", async () => {
+  test("accepts levels whose factor is not 4", async () => {
     const catalog = await readCatalog(
       storeOf([
         continuousChannel({
           levels: [
-            { periodUs: 6000, pairs: pairsOf(RAW, 6) },
             { periodUs: 2000, pairs: pairsOf(RAW, 2) },
+            { periodUs: 6000, pairs: pairsOf(RAW, 6) },
             { periodUs: 24_000, pairs: pairsOf(RAW, 24) },
           ],
         }),

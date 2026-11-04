@@ -40,7 +40,8 @@ order. `ChannelInfo` is a union discriminated on `kind`:
 
 - `ContinuousChannelInfo` (`kind: "continuous"`): `index`, `id`, `name`, `unit`,
   `rateHz`, `startUs`, `endUs`, `runs`, and an optional `provenance`. `endUs` is
-  exclusive, one period past the last sample of the channel's grid. `runs` is the
+  exclusive, one period past the last sample of the channel's grid, rounded up to a
+  whole microsecond. `runs` is the
   number of runs: 1 for a channel that never paused, 0 for an empty one;
   [`runs()`](#runsoptions) reads them.
 - `EventChannelInfo` (`kind: "event"`): `index`, `id`, `name`, `eventCount`, `columns`
@@ -82,8 +83,8 @@ to name the traces:
 - `montage`: `{ lead, secondary }` pairs. Each trace is `lead - secondary`, sample by
   sample. The returned segment's `channel` is the compound key
   `{leadId}_{leadName}<->{secondaryName}`. The pair must share a sample rate, and the
-  two sample grids must align: equal periods, with starts a whole number of periods
-  apart. The read covers the pair's shared extent.
+  two sample grids must align: the starts differ by a whole number of samples. The
+  read covers the pair's shared extent.
 
 Passing both or neither throws. The rest of the options:
 
@@ -104,6 +105,11 @@ back to the finest level when none fits. Levels are ordered by their `period_us`
 factor between consecutive levels is whatever the producer chose, and nothing assumes 4. Segments from a coarse level carry interleaved `[min, max, ...]` envelope pairs
 from the level's `minmax` member and set `isMinMax`; segments from the raw level carry
 samples. A level's `mean` and `var` members are not read.
+
+A level covers a whole number of samples, at least 2, that follows from its `period_us`
+and the channel's `rateHz`. Each level is a multiple of at least 2 times the one
+before it. The first read of a client rejects a bundle whose levels or member lengths
+break these rules, and the error names the level.
 
 A montage, a filter, or `raw: true` forces a read of the raw level. Coarse levels are
 already decimated, so they cannot be filtered or differenced exactly.
@@ -279,9 +285,10 @@ Returns a promise for the `[startUs, endUs)` spans where one continuous channel 
 clamped to the window. Takes `channel`, `startUs`, `endUs`, an optional `gapThresholdUs`,
 an optional `priority` (defaulting to `"background"`), and an optional `signal`.
 
-Spans come from the coarsest pyramid level, so their edges align to that level's bins.
-A bin is populated when the level's `count` member is above zero, or, on a level
-without `count`, when its min/max is finite. In a 1.0 bundle the two agree: every
+Spans come from the coarsest pyramid level, so their edges align to that level's bins,
+rounded outward to whole microseconds and kept inside the channel's `startUs` and
+`endUs`. A bin is populated when the level's `count` member is above zero, or, on
+a level without `count`, when its min/max is finite. In a 1.0 bundle the two agree: every
 statistic covers a bin's finite samples only, and a bin is NaN only when it recorded
 none. Gaps no wider than `gapThresholdUs` are bridged into one span. The default of 0
 splits on every gap. The edges of a pause are exact in [`runs()`](#runsoptions), not
@@ -297,8 +304,8 @@ A run is a span of samples recorded one period apart. A recording that paused an
 resumed off its sample grid stores one row per run with the exact resume time, which
 the grid can only place to within one sample period. Sample `firstSample + i` of a
 run is at `startUs + i * samplePeriod`, and `endUs` is one period past its last
-sample, exclusive. A channel without a `runs` table is one run from `startUs` over
-every sample, and an empty channel has none. The table is read once per channel and
+sample, exclusive and rounded up to a whole microsecond. A channel without a
+`runs` table is one run from `startUs` over every sample, and an empty channel has none. The table is read once per channel and
 cached for the client's lifetime.
 
 Rejects for an unknown id, an event channel, or a table that breaks the format's

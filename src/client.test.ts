@@ -1885,14 +1885,14 @@ describe("acceptance: committed bundle", () => {
   test("data spans come from the coarsest level's count", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
     // The coarsest level has 64 ms bins and its last bin runs 16 ms past the data,
-    // so the span is clamped by the window rather than by the channel's end.
+    // so the span ends at the channel's end however far the window reaches.
     expect(
       await client.dataSpans({
         channel: "sineB",
         startUs: 0,
         endUs: 40_000_000,
       }),
-    ).toEqual([[2_000_000, 32_016_000]]);
+    ).toEqual([[2_000_000, 32_000_000]]);
     expect(
       await client.dataSpans({
         channel: "sineB",
@@ -2090,5 +2090,124 @@ describe("acceptance: committed bundle", () => {
 
     const expected = createFilter(spec, info.rateHz).process(raw.data);
     expect(Array.from(filtered.data)).toEqual(Array.from(expected));
+  });
+});
+
+describe("channels at 30000 Hz from an epoch-scale offset", () => {
+  const EPOCH_US = 1_790_000_000_000_000;
+  const COUNT = 100;
+  const ramp = Array.from({ length: COUNT }, (_, i) => i);
+  // Bins 2 and 3 of the 4-sample level hold no finite sample.
+  const gapped = pairsOf(ramp, 4).map((value, i) =>
+    i >= 4 && i < 8 ? NaN : value,
+  );
+
+  const client = new StreamingClient({
+    store: createMemoryStore(
+      bundleFiles([
+        { index: 0, tsz: tsz("p", "P", 30_000, EPOCH_US), raw: ramp },
+        {
+          index: 1,
+          tsz: tsz("q", "Q", 30_000, EPOCH_US + 100),
+          raw: ramp.map((value) => value * 2),
+        },
+        {
+          index: 2,
+          tsz: tsz("r", "R", 30_000, EPOCH_US + 34),
+          raw: ramp,
+        },
+        {
+          index: 3,
+          tsz: tsz("s", "S", 30_000, EPOCH_US),
+          raw: ramp,
+          levels: [{ periodUs: (4 * 1e6) / 30_000, pairs: gapped }],
+        },
+      ]),
+    ),
+  });
+
+  test("reports a channel end rounded up to a whole microsecond", async () => {
+    const info = continuousById(await client.channelInfo(), "p");
+    expect(info.startUs).toBe(EPOCH_US);
+    expect(info.endUs).toBe(EPOCH_US + 3334);
+  });
+
+  test("starts a read on the sample whose grid time is the window start", async () => {
+    const segment = await collectOne(
+      client.query({
+        channels: ["p"],
+        startUs: EPOCH_US + 100,
+        endUs: EPOCH_US + 200,
+        pixelWidthUs: 1e6 / 30_000,
+        raw: true,
+      }),
+    );
+    expect(segment.startUs).toBe(EPOCH_US + 100);
+    expect(Array.from(segment.data)).toEqual([3, 4, 5]);
+  });
+
+  test("starts a read at the grid time of its first sample", async () => {
+    const segment = await collectOne(
+      client.query({
+        channels: ["p"],
+        startUs: EPOCH_US + 99,
+        endUs: EPOCH_US + 134,
+        pixelWidthUs: 1e6 / 30_000,
+        raw: true,
+      }),
+    );
+    expect(segment.startUs).toBe(EPOCH_US + (2 * 1e6) / 30_000);
+    expect(Array.from(segment.data)).toEqual([2, 3, 4]);
+  });
+
+  test("aligns a pair whose starts differ by a whole number of samples", async () => {
+    const segment = await collectOne(
+      client.query({
+        startUs: EPOCH_US,
+        endUs: EPOCH_US + 3334,
+        pixelWidthUs: 1e6 / 30_000,
+        montage: [{ lead: "p", secondary: "q" }],
+      }),
+    );
+    expect(segment.startUs).toBe(EPOCH_US + 100);
+    expect(segment.data).toHaveLength(COUNT - 3);
+    expect(segment.data[0]).toBe(3);
+    expect(segment.data[1]).toBe(2);
+  });
+
+  test("rejects a pair whose starts are not a whole number of samples apart", async () => {
+    await expect(
+      collect(
+        client.query({
+          startUs: EPOCH_US,
+          endUs: EPOCH_US + 3334,
+          pixelWidthUs: 1e6 / 30_000,
+          montage: [{ lead: "p", secondary: "r" }],
+        }),
+      ),
+    ).rejects.toThrow(/cannot be aligned/);
+  });
+
+  test("rounds data spans outward to whole microseconds inside the channel", async () => {
+    expect(
+      await client.dataSpans({
+        channel: "s",
+        startUs: EPOCH_US - 1000,
+        endUs: EPOCH_US + 10_000,
+      }),
+    ).toEqual([
+      [EPOCH_US, EPOCH_US + 267],
+      [EPOCH_US + 533, EPOCH_US + 3334],
+    ]);
+  });
+
+  test("clamps data spans to the window", async () => {
+    expect(
+      await client.dataSpans({
+        channel: "s",
+        startUs: EPOCH_US + 600,
+        endUs: EPOCH_US + 700,
+      }),
+    ).toEqual([[EPOCH_US + 600, EPOCH_US + 700]]);
   });
 });
