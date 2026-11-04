@@ -67,7 +67,12 @@ export interface CountLevelInfo {
 
 /** Store paths and shapes of an event channel's arrays. */
 export interface EventArrays {
-  readonly events: { readonly path: `/${string}`; readonly count: number };
+  readonly events: {
+    readonly path: `/${string}`;
+    readonly count: number;
+    /** Events per inner chunk, the unit one read fetches and decodes. */
+    readonly chunkLength: number;
+  };
   readonly durations?: ColumnArray & { readonly maxDurationUs?: number };
   readonly labels?: ColumnArray;
   readonly values?: ColumnArray;
@@ -175,6 +180,29 @@ function rank1Length(shape: unknown): number | undefined {
     typeof shape[0] === "number"
     ? shape[0]
     : undefined;
+}
+
+/**
+ * Returns the first-axis length of an array's inner chunk: the `chunk_shape`
+ * of its `sharding_indexed` codec when it is sharded, else the `chunk_shape` of
+ * its chunk grid. Returns undefined when the metadata declares neither.
+ */
+function innerChunkLength(node: Json): number | undefined {
+  const codecs = Array.isArray(node.codecs) ? node.codecs : [];
+  for (const codec of codecs) {
+    const entry = asObject(codec);
+    if (entry?.name === "sharding_indexed") {
+      return firstChunkLength(asObject(entry.configuration)?.chunk_shape);
+    }
+  }
+  const grid = asObject(node.chunk_grid);
+  return firstChunkLength(asObject(grid?.configuration)?.chunk_shape);
+}
+
+/** Returns the first entry of a chunk shape when it is a positive integer. */
+function firstChunkLength(chunkShape: unknown): number | undefined {
+  const length = Array.isArray(chunkShape) ? chunkShape[0] : undefined;
+  return Number.isSafeInteger(length) && length > 0 ? length : undefined;
 }
 
 /** Returns the dimensions of a `[rows, width]` shape, or undefined for any other shape. */
@@ -494,9 +522,16 @@ function readEvent(index: number, tsz: Json, nodes: ChannelNodes): EventEntry {
   const provenance = attrs.optionalObject("provenance");
 
   // 1. The event times, which every column is indexed against.
-  const count = rank1Length(nodes.arrays.get("events")?.shape);
-  if (count === undefined) {
+  const eventsNode = nodes.arrays.get("events");
+  const count = rank1Length(eventsNode?.shape);
+  if (eventsNode === undefined || count === undefined) {
     throw new Error(`${where} must have an events array of shape [n]`);
+  }
+  const chunkLength = innerChunkLength(eventsNode);
+  if (chunkLength === undefined) {
+    throw new Error(
+      `${where} events must declare a chunk shape of positive integers`,
+    );
   }
   const path = (leaf: string): `/${string}` => `/${index}/${leaf}`;
 
@@ -594,7 +629,7 @@ function readEvent(index: number, tsz: Json, nodes: ChannelNodes): EventEntry {
   countLevels.sort((a, b) => a.periodUs - b.periodUs);
 
   const arrays: Mutable<EventArrays> = {
-    events: { path: path("events"), count },
+    events: { path: path("events"), count, chunkLength },
     countLevels,
   };
   const columns: EventColumn[] = [];
