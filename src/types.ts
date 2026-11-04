@@ -6,6 +6,11 @@
  *
  * Times are microseconds from the bundle's origin. Values are in physical units; the
  * reader does not negate them.
+ *
+ * The statistics `mean`, `variance`, and `count` describe the bins of an envelope. A
+ * segment of raw samples, a montage trace, and a filtered trace carry none, except a
+ * raw segment that was resampled onto pixels: its statistics cover the finite samples
+ * of each pixel.
  */
 export interface Segment {
   /** Channel id the segment belongs to (a compound key when montaged). */
@@ -22,7 +27,31 @@ export interface Segment {
    * float width.
    */
   readonly data: Float64Array;
+  /**
+   * Arithmetic mean of the finite samples of each bin, one value per bin. NaN for a
+   * bin with no finite sample. Present only when the query asked for it and the data
+   * level stores it.
+   */
+  readonly mean?: Float64Array;
+  /**
+   * Population variance of the finite samples of each bin, one value per bin. NaN for
+   * a bin with no finite sample. Present only when the query asked for `"var"` and
+   * the data level stores it.
+   */
+  readonly variance?: Float64Array;
+  /**
+   * Number of finite samples in each bin, one whole number per bin. A `Float64Array`
+   * so that sums over many bins stay exact. Present only when the query asked for it
+   * and the data level stores it.
+   */
+  readonly count?: Float64Array;
 }
+
+/**
+ * A per-bin statistic a query can read beside the envelope, named as the level stores
+ * it: `"mean"`, `"var"` (returned as {@link Segment.variance}), or `"count"`.
+ */
+export type LevelMember = "mean" | "var" | "count";
 
 /** Fields every channel carries, whatever its kind. */
 export interface ChannelBase {

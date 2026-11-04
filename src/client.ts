@@ -45,6 +45,7 @@ import type {
   EventCounts,
   EventWindow,
   FilterSpec,
+  LevelMember,
   MontagePair,
   ReadPriority,
   RecordingInfo,
@@ -126,6 +127,14 @@ export interface QueryOptions {
   readonly raw?: boolean;
   /** Bipolar pairs to render, in place of `channels`. Each pair is one trace. */
   readonly montage?: readonly MontagePair[];
+  /**
+   * Per-bin statistics to read beside the envelope. Each lands on {@link Segment} as
+   * `mean`, `variance`, or `count`, and only when the level read stores it. The reads
+   * start with the min/max read under the same cap. A segment resampled onto pixels
+   * carries them folded per pixel, and a resampled raw segment computes them from its
+   * finite samples. A montage, a filter, or an unresampled raw read carries none.
+   */
+  readonly members?: readonly LevelMember[];
   /** Butterworth filter applied to every trace. Forces a raw read. */
   readonly filter?: FilterSpec;
   /** Cap override in bytes for this query's reads of the raw level. */
@@ -253,7 +262,15 @@ interface Target {
 
 /** A read settled to a value or an error. */
 type SettledRead =
-  { ok: true; data: Float64Array } | { ok: false; error: unknown };
+  | { ok: true; data: Float64Array; members: MemberArrays }
+  | { ok: false; error: unknown };
+
+/** The statistics a level read returned, by their {@link Segment} field. */
+interface MemberArrays {
+  mean?: Float64Array;
+  variance?: Float64Array;
+  count?: Float64Array;
+}
 
 /** A bundle opened for reading. */
 interface Bundle {
@@ -415,6 +432,13 @@ export class StreamingClient {
     const montage = params.montage ?? [];
     requireOneTraceSource(channels, montage);
 
+    const requested = requireMembers(params.members);
+    // A montage trace and a filtered trace carry no statistics.
+    const wanted =
+      params.filter === undefined && montage.length === 0 ? requested : [];
+    const resamples = (level: LevelInfo): boolean =>
+      !raw && params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * level.periodUs;
+
     const forceRaw = params.filter !== undefined || montage.length > 0 || raw;
     const { catalog, store } = await this.#loadBundle();
 
@@ -461,7 +485,13 @@ export class StreamingClient {
     const started = traces.map((trace) => ({
       trace,
       leads: trace.reads.map((read) =>
-        this.#startRead(store, read, opts, priority),
+        this.#startRead(
+          store,
+          read,
+          opts,
+          priority,
+          membersToRead(read.level, wanted, resamples(read.level)),
+        ),
       ),
       secondary:
         trace.secondaryRead === undefined
@@ -483,20 +513,22 @@ export class StreamingClient {
             startUs: read.startUs,
             samplePeriodUs: read.level.periodUs,
             isMinMax: read.level.isMinMax,
-            data: second === undefined ? first : subtract(first, second),
+            data:
+              second === undefined
+                ? first.data
+                : subtract(first.data, second.data),
+            ...first.members,
           };
 
           if (params.filter) {
             segment = this.#filters.apply(segment, params.filter, trace.rateHz);
           }
-          if (
-            !raw &&
-            params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
-          ) {
+          if (resamples(read.level)) {
             segment = resampleToPixels(
               segment,
               params.pixelWidthUs,
               trace.channelStartUs,
+              wanted,
             );
           }
           yield segment;
@@ -897,17 +929,36 @@ export class StreamingClient {
     };
   }
 
-  /** Starts one read under the in-flight cap. The returned promise never rejects. */
+  /**
+   * Starts one read under the in-flight cap, with a read of each of `members` beside
+   * it. The returned promise never rejects.
+   */
   #startRead(
     store: Store,
     read: PlannedRead,
     opts: StoreOptions | undefined,
     priority: ReadPriority,
+    members: readonly LevelMember[] = [],
   ): Promise<SettledRead> {
-    return this.#limit(priority, () =>
-      readBins(store, read.level.path, read.range, opts),
-    )
-      .then((data): SettledRead => ({ ok: true, data }))
+    const { level, range } = read;
+    const data = this.#limit(priority, () =>
+      readBins(store, level.path, range, opts),
+    );
+    const statistics = members.map((member) =>
+      this.#limit(priority, () =>
+        readMember(store, level, member, range, opts),
+      ),
+    );
+    return Promise.all([data, Promise.all(statistics)])
+      .then(([bins, arrays]): SettledRead => {
+        const found: MemberArrays = {};
+        arrays.forEach((array, position) => {
+          if (array !== undefined) {
+            found[memberField(members[position]!)] = array;
+          }
+        });
+        return { ok: true, data: bins, members: found };
+      })
       .catch((error: unknown): SettledRead => ({ ok: false, error }));
   }
 }
@@ -975,12 +1026,82 @@ function readBytes(read: PlannedRead): number {
   return (read.range.end - read.range.start) * BYTES_PER_RAW_SAMPLE;
 }
 
-/** Returns a settled read's data, or rethrows its error. */
-function unwrapRead(result: SettledRead): Float64Array {
+/** Returns a settled read, or rethrows its error. */
+function unwrapRead(result: SettledRead): Extract<SettledRead, { ok: true }> {
   if (!result.ok) {
     throw result.error;
   }
-  return result.data;
+  return result;
+}
+
+const LEVEL_MEMBERS: readonly LevelMember[] = ["mean", "var", "count"];
+
+/** Returns `members` without duplicates. Throws for a name a level does not store. */
+function requireMembers(
+  members: readonly LevelMember[] | undefined,
+): LevelMember[] {
+  for (const member of members ?? []) {
+    if (!LEVEL_MEMBERS.includes(member)) {
+      throw new RangeError(
+        `unknown member ${String(member)}; valid members are ${LEVEL_MEMBERS.join(", ")}`,
+      );
+    }
+  }
+  return [...new Set(members)];
+}
+
+/**
+ * Returns the members to read from a level so that `wanted` can be delivered.
+ *
+ * A raw level stores none. Folding a level onto pixels takes the `count` and `mean`
+ * of the bins beside whatever is asked for.
+ */
+function membersToRead(
+  level: LevelInfo,
+  wanted: readonly LevelMember[],
+  resamples: boolean,
+): LevelMember[] {
+  if (!level.isMinMax || wanted.length === 0) {
+    return [];
+  }
+  const needed = new Set(wanted);
+  if (resamples) {
+    if (needed.has("var")) needed.add("mean");
+    if (needed.has("var") || needed.has("mean")) needed.add("count");
+  }
+  return [...needed];
+}
+
+/** Returns the {@link Segment} field that holds a member. */
+function memberField(member: LevelMember): keyof MemberArrays {
+  return member === "var" ? "variance" : member;
+}
+
+/**
+ * Reads one member of a level over a bin range, widened to `Float64Array`. Resolves
+ * to undefined when the level does not store the member.
+ */
+async function readMember(
+  store: Store,
+  level: LevelInfo,
+  member: LevelMember,
+  range: { start: number; end: number },
+  opts: StoreOptions | undefined,
+): Promise<Float64Array | undefined> {
+  const path =
+    member === "count"
+      ? level.countPath
+      : member === "mean"
+        ? level.meanPath
+        : level.variancePath;
+  if (path === undefined) {
+    return undefined;
+  }
+  const values =
+    member === "count"
+      ? await readColumn(store, path, range, ["uint32"], opts)
+      : await readColumn(store, path, range, ["float32", "float64"], opts);
+  return Float64Array.from(values);
 }
 
 function toStoreOptions(signal?: AbortSignal): StoreOptions | undefined {

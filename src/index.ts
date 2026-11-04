@@ -12,6 +12,7 @@ export type {
   EventCounts,
   EventWindow,
   FilterSpec,
+  LevelMember,
   MontagePair,
   ReadPriority,
   RecordingInfo,

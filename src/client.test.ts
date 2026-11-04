@@ -2547,3 +2547,279 @@ describe("channels at 30000 Hz from an epoch-scale offset", () => {
     ).toEqual([[EPOCH_US + 600, EPOCH_US + 700]]);
   });
 });
+
+describe("level members", () => {
+  const START_US = 1_000_000;
+  const WINDOW = { startUs: START_US, endUs: START_US + 32_000 };
+
+  /** Count, mean, and population variance of the finite values, in binary64. */
+  function direct(values: readonly number[]) {
+    const finite = values.filter(Number.isFinite);
+    const count = finite.length;
+    const mean = finite.reduce((sum, value) => sum + value, 0) / count;
+    const variance =
+      finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / count;
+    return { count, mean, variance };
+  }
+
+  const blocks = (values: readonly number[], width: number): number[][] =>
+    Array.from({ length: values.length / width }, (_, bin) =>
+      values.slice(bin * width, (bin + 1) * width),
+    );
+
+  const pairs = (values: readonly number[], width: number): number[] =>
+    blocks(values, width).flatMap((block) => {
+      const finite = block.filter(Number.isFinite);
+      return finite.length === 0
+        ? [NaN, NaN]
+        : [Math.min(...finite), Math.max(...finite)];
+    });
+
+  // Samples 5 and 6 are NaN, and the bin of samples 20 to 23 holds nothing.
+  const SAMPLES = Array.from({ length: 32 }, (_, i) =>
+    (i >= 20 && i < 24) || i === 5 || i === 6 ? NaN : ((i * 7) % 11) - 3,
+  );
+  const level1 = blocks(SAMPLES, 4).map(direct);
+
+  const MEMBER_CHANNELS: FixtureChannel[] = [
+    {
+      index: 0,
+      tsz: tsz("s", "S", 1000),
+      raw: SAMPLES,
+      levels: [
+        {
+          periodUs: 4000,
+          pairs: pairs(SAMPLES, 4),
+          count: level1.map((stats) => stats.count),
+          mean: level1.map((stats) => stats.mean),
+          var: level1.map((stats) => stats.variance),
+        },
+        {
+          periodUs: 16_000,
+          pairs: pairs(SAMPLES, 16),
+          count: blocks(SAMPLES, 16).map((block) => direct(block).count),
+        },
+      ],
+    },
+    { index: 1, tsz: tsz("p", "P", 1000), raw: SAMPLES },
+    { index: 2, tsz: tsz("q", "Q", 1000), raw: SAMPLES },
+  ];
+
+  const makeMemberClient = (store?: (inner: Store) => Store) => {
+    const inner = createMemoryStore(bundleFiles(MEMBER_CHANNELS));
+    return new StreamingClient({ store: store?.(inner) ?? inner });
+  };
+
+  const all = ["mean", "var", "count"] as const;
+  const f32 = (values: readonly number[]) =>
+    Array.from(Float32Array.from(values));
+
+  test("carries no statistics unless the query asks", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+      }),
+    );
+
+    expect(segment.mean).toBeUndefined();
+    expect(segment.variance).toBeUndefined();
+    expect(segment.count).toBeUndefined();
+  });
+
+  test("reads the stored statistics of a level, one value per bin", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+        members: all,
+      }),
+    );
+
+    expect(Array.from(segment.count!)).toEqual(level1.map((s) => s.count));
+    expect(Array.from(segment.mean!)).toEqual(f32(level1.map((s) => s.mean)));
+    expect(Array.from(segment.variance!)).toEqual(
+      f32(level1.map((s) => s.variance)),
+    );
+    expect(segment.count![5]).toBe(0);
+    expect(segment.mean![5]).toBeNaN();
+  });
+
+  test("reads only the statistics asked for", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+        members: ["count"],
+      }),
+    );
+
+    expect(segment.count).toBeDefined();
+    expect(segment.mean).toBeUndefined();
+    expect(segment.variance).toBeUndefined();
+  });
+
+  test("leaves out a statistic the level does not store", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 16_000,
+        members: all,
+      }),
+    );
+
+    expect(segment.samplePeriodUs).toBe(16_000);
+    expect(Array.from(segment.count!)).toEqual(
+      blocks(SAMPLES, 16).map((block) => direct(block).count),
+    );
+    expect(segment.mean).toBeUndefined();
+    expect(segment.variance).toBeUndefined();
+  });
+
+  test("folds statistics per pixel when the level is resampled", async () => {
+    // 13 ms pixels over 4 ms bins: pixels hold bins 0-3, 4-6, and 7.
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 13_000,
+        members: all,
+      }),
+    );
+
+    const groups = [
+      SAMPLES.slice(0, 16),
+      SAMPLES.slice(16, 28),
+      SAMPLES.slice(28),
+    ];
+    const expected = groups.map(direct);
+    expect(segment.samplePeriodUs).toBe(13_000);
+    expect(Array.from(segment.count!)).toEqual(expected.map((s) => s.count));
+    segment.mean!.forEach((value, pixel) => {
+      expect(value).toBeCloseTo(expected[pixel]!.mean, 5);
+    });
+    segment.variance!.forEach((value, pixel) => {
+      expect(value).toBeCloseTo(expected[pixel]!.variance, 5);
+    });
+    // A pixel over one bin copies that bin.
+    expect(segment.mean![2]).toBe(f32([level1[7]!.mean])[0]);
+  });
+
+  test("delivers only the folded statistics asked for", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["s"],
+        ...WINDOW,
+        pixelWidthUs: 13_000,
+        members: ["var"],
+      }),
+    );
+
+    expect(segment.variance).toBeDefined();
+    expect(segment.mean).toBeUndefined();
+    expect(segment.count).toBeUndefined();
+  });
+
+  test("computes statistics of a resampled raw segment from its finite samples", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["p"],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+        members: all,
+      }),
+    );
+
+    const expected = blocks(SAMPLES, 4).map(direct);
+    expect(Array.from(segment.count!)).toEqual(expected.map((s) => s.count));
+    expect(Array.from(segment.mean!)).toEqual(expected.map((s) => s.mean));
+    expect(Array.from(segment.variance!)).toEqual(
+      expected.map((s) => s.variance),
+    );
+  });
+
+  test("carries none on an unresampled raw segment", async () => {
+    const segment = await collectOne(
+      makeMemberClient().query({
+        channels: ["p"],
+        ...WINDOW,
+        pixelWidthUs: 1000,
+        members: all,
+      }),
+    );
+
+    expect(segment.mean).toBeUndefined();
+    expect(segment.variance).toBeUndefined();
+    expect(segment.count).toBeUndefined();
+  });
+
+  test("carries none on a montage trace or a filtered trace", async () => {
+    const client = makeMemberClient();
+    const montaged = await collectOne(
+      client.query({
+        montage: [{ lead: "p", secondary: "q" }],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+        members: all,
+      }),
+    );
+    const filtered = await collectOne(
+      client.query({
+        channels: ["p"],
+        ...WINDOW,
+        pixelWidthUs: 4000,
+        filter: LOWPASS,
+        members: all,
+      }),
+    );
+
+    for (const segment of [montaged, filtered]) {
+      expect(segment.mean).toBeUndefined();
+      expect(segment.variance).toBeUndefined();
+      expect(segment.count).toBeUndefined();
+    }
+  });
+
+  test("rejects an unknown member before any read", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(MEMBER_CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+    await client.channelInfo();
+    const before = counting.total();
+
+    await expect(
+      collect(
+        client.query({
+          channels: ["s"],
+          ...WINDOW,
+          pixelWidthUs: 4000,
+          // @ts-expect-error "median" is not a member.
+          members: ["median"],
+        }),
+      ),
+    ).rejects.toThrow(RangeError);
+    expect(counting.total()).toBe(before);
+  });
+
+  test("rejects the query when a member read fails", async () => {
+    const client = makeMemberClient((inner) =>
+      withFailingKey(inner, "/0/1/mean/c/0"),
+    );
+
+    await expect(
+      collect(
+        client.query({
+          channels: ["s"],
+          ...WINDOW,
+          pixelWidthUs: 4000,
+          members: ["mean"],
+        }),
+      ),
+    ).rejects.toThrow(/mean\/c\/0 failed/);
+  });
+});

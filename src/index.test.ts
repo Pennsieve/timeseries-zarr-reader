@@ -27,6 +27,7 @@ test("the package re-exports the declared types", () => {
   expectTypeOf<reader.RecordingInfo>().toEqualTypeOf<types.RecordingInfo>();
   expectTypeOf<reader.Waveforms>().toEqualTypeOf<types.Waveforms>();
   expectTypeOf<reader.FilterSpec>().toEqualTypeOf<types.FilterSpec>();
+  expectTypeOf<reader.LevelMember>().toEqualTypeOf<types.LevelMember>();
   expectTypeOf<reader.MontagePair>().toEqualTypeOf<types.MontagePair>();
   expectTypeOf<reader.ReadPriority>().toEqualTypeOf<types.ReadPriority>();
   expectTypeOf<reader.Segment>().toEqualTypeOf<types.Segment>();

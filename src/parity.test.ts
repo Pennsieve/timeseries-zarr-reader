@@ -194,6 +194,7 @@ async function checkContinuous(
         endUs: window.end_us,
         pixelWidthUs: raw ? 1e6 / channel.rate_hz : window.period_us,
         raw,
+        members: ["mean", "var", "count"],
       }),
     ),
   );
@@ -226,6 +227,29 @@ async function checkContinuous(
         ),
       ).toBe("");
     });
+    // Each statistic the level stores is bit-exact, and the others are absent.
+    const statistics = [
+      ["mean", segment.mean],
+      ["var", segment.variance],
+      ["count", segment.count],
+    ] as const;
+    for (const [column, values] of statistics) {
+      if (raw || window.rows[column] === undefined) {
+        expect(values).toBeUndefined();
+      } else {
+        expect(values?.length).toBe(length);
+        expect(
+          firstDifference(
+            window,
+            column,
+            (at) => values![at - from],
+            number,
+            from,
+            from + length,
+          ),
+        ).toBe("");
+      }
+    }
   });
 }
 

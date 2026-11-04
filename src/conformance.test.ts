@@ -35,6 +35,9 @@ interface ManifestContinuous {
       index: number;
       min: number | null;
       max: number | null;
+      count: number;
+      mean: number | null;
+      var?: number | null;
     }>;
   }>;
 }
@@ -93,6 +96,23 @@ const fixtures = Object.entries(manifest.fixtures);
 /** The manifest writes NaN as null. */
 const number = (value: number | null): number => value ?? NaN;
 const numbers = (values: Array<number | null>): number[] => values.map(number);
+
+/**
+ * Checks `actual` against a manifest `mean` or `var`: NaN matches NaN, and any other
+ * value matches within 2^-20 relative.
+ */
+function expectWithinTolerance(
+  actual: number | undefined,
+  expected: number | null,
+): void {
+  if (expected === null) {
+    expect(actual).toBeNaN();
+    return;
+  }
+  expect(Math.abs(actual! - expected)).toBeLessThanOrEqual(
+    2 ** -20 * Math.abs(expected),
+  );
+}
 
 describe("conformance fixtures", () => {
   const open = async (fixture: Fixture) =>
@@ -185,6 +205,7 @@ describe("conformance fixtures", () => {
           startUs: info.startUs,
           endUs: info.endUs,
           pixelWidthUs: level.period_us,
+          members: ["mean", "var", "count"],
         }),
       );
       expect(segment).toMatchObject({
@@ -193,9 +214,16 @@ describe("conformance fixtures", () => {
         startUs: info.startUs,
       });
       expect(segment!.data.length).toBe(level.bins * 2);
-      for (const { index, min, max } of level.bin_values) {
-        expect(segment!.data[2 * index]).toBe(number(min));
-        expect(segment!.data[2 * index + 1]).toBe(number(max));
+      for (const bin of level.bin_values) {
+        expect(segment!.data[2 * bin.index]).toBe(number(bin.min));
+        expect(segment!.data[2 * bin.index + 1]).toBe(number(bin.max));
+        expect(segment!.count![bin.index]).toBe(bin.count);
+        expectWithinTolerance(segment!.mean![bin.index], bin.mean);
+        if (bin.var === undefined) {
+          expect(segment!.variance).toBeUndefined();
+        } else {
+          expectWithinTolerance(segment!.variance![bin.index], bin.var);
+        }
       }
     }
   }
