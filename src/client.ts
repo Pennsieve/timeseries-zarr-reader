@@ -928,11 +928,20 @@ async function readCoverage(
   return populated;
 }
 
-/** Returns the catalog entry for a channel id. Throws for an unknown id. */
+/**
+ * Returns the catalog entry for a channel id. Throws for an unknown id and for an id
+ * that more than one channel carries.
+ */
 function channelEntry(catalog: BundleCatalog, id: string): ChannelEntry {
-  const entry = catalog.byId.get(id);
+  const [entry, ...others] = catalog.byId.get(id) ?? [];
   if (entry === undefined) {
     throw new Error(`no channel with id ${id}`);
+  }
+  if (others.length > 0) {
+    const indices = [entry, ...others].map((e) => e.info.index).join(", ");
+    throw new Error(
+      `channel id ${id} is shared by channels ${indices}; ids must be unique to query`,
+    );
   }
   return entry;
 }
