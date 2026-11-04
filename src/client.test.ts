@@ -92,6 +92,29 @@ function withHeldKeys(
 }
 
 /**
+ * Wraps a store so the read of the root `zarr.json` waits for `release`, standing
+ * in for a slow catalog load.
+ */
+function withGatedRoot(store: Store): { store: Store; release: () => void } {
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    release,
+    store: {
+      get: async (key, opts) => {
+        if (key === "/zarr.json") {
+          await gate;
+        }
+        return store.get(key, opts);
+      },
+      getRange: (key, range, opts) => store.getRange(key, range, opts),
+    },
+  };
+}
+
+/**
  * The `tsz` object of a continuous channel. Starts at 1 s unless `offsetUs` says
  * otherwise.
  */
@@ -629,6 +652,27 @@ describe("query", () => {
         }),
       ),
     ).rejects.toThrow(/abort/i);
+  });
+
+  test("rejects a query aborted while the catalog loads", async () => {
+    const gated = withGatedRoot(createMemoryStore(bundleFiles(CHANNELS)));
+    const counting = createCountingStore(gated.store);
+    const client = new StreamingClient({ store: counting.store });
+    const controller = new AbortController();
+
+    const pending = collect(
+      client.query({
+        channels: ["a"],
+        ...FULL,
+        pixelWidthUs: 1000,
+        signal: controller.signal,
+      }),
+    );
+    controller.abort(new Error("stop"));
+    gated.release();
+
+    await expect(pending).rejects.toThrow(/stop/);
+    expect(counting.reads.get("/0/raw/c/0")).toBeUndefined();
   });
 
   test("rejects a query carrying both channels and a montage", async () => {
@@ -1225,6 +1269,24 @@ describe("queryEvents", () => {
         }),
       ),
     ).rejects.toThrow(/abort/i);
+  });
+
+  test("rejects a query aborted while the catalog loads", async () => {
+    const gated = withGatedRoot(createMemoryStore(bundleFiles(CHANNELS)));
+    const client = new StreamingClient({ store: gated.store });
+    const controller = new AbortController();
+
+    const pending = collect(
+      client.queryEvents({
+        channels: ["u"],
+        ...FULL,
+        signal: controller.signal,
+      }),
+    );
+    controller.abort(new Error("stop"));
+    gated.release();
+
+    await expect(pending).rejects.toThrow(/stop/);
   });
 
   test("rejects a window that ends before it starts", async () => {

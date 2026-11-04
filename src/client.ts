@@ -478,6 +478,8 @@ export class StreamingClient {
         : await this.#planChannels(targets, params);
     assertWithinByteCap(traces, params.maxRawBytes ?? this.#maxRawBytes);
 
+    // An abort that landed during the awaits above fires no listener attached after it.
+    params.signal?.throwIfAborted();
     // One signal for every read of the query: the caller's abort reaches it, and so
     // does the query ending before every read was awaited.
     const reads = new AbortController();
@@ -583,6 +585,8 @@ export class StreamingClient {
       entry: eventEntry(catalog, id),
     }));
 
+    // An abort that landed during the catalog load fires no listener attached after it.
+    params.signal?.throwIfAborted();
     // One signal for every read of the query, as in query().
     const reads = new AbortController();
     const forwardAbort = (): void => {
