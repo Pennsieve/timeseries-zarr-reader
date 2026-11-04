@@ -1310,6 +1310,18 @@ describe("queryEvents", () => {
       ),
     ).rejects.toThrow(RangeError);
   });
+
+  test("rejects a window with a NaN bound", async () => {
+    const client = makeClient();
+    for (const window of [
+      { startUs: Number.NaN, endUs: 1_005_000 },
+      { startUs: 1_000_000, endUs: Number.NaN },
+    ]) {
+      await expect(
+        collect(client.queryEvents({ channels: ["u"], ...window })),
+      ).rejects.toThrow(/NaN/);
+    }
+  });
 });
 
 describe("queryEvents reads", () => {
