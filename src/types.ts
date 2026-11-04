@@ -1,5 +1,8 @@
 /**
- * A contiguous run of one trace's data over a queried window.
+ * One trace's data over a queried window, evenly spaced from `startUs`.
+ *
+ * A raw read of a channel with runs gives one segment per run. Every other read gives
+ * one segment per trace.
  *
  * Times are microseconds from the bundle's origin. Values are in physical units; the
  * reader does not negate them.
@@ -53,10 +56,9 @@ export interface ContinuousChannelInfo extends ChannelBase {
   /** Time of the channel's first sample. */
   readonly startUs: number;
   /**
-   * Exclusive end of the channel's sample grid: one sample period past the last
-   * grid sample, rounded up to a whole microsecond. On a channel with more than
-   * one run the last run ends within one sample period of this; `runs()` gives the
-   * exact end.
+   * Exclusive end of the channel: one sample period past its last sample, rounded
+   * up to a whole microsecond. A channel with runs ends where its last run does,
+   * and a channel without ends on its grid.
    */
   readonly endUs: number;
   /**

@@ -12,6 +12,9 @@ import {
   binStartUs,
   countBinRange,
   countBinStartUs,
+  entryEdgeUs,
+  entryTimeUs,
+  runIndexRange,
   wholeSamples,
 } from "./grid.js";
 import {
@@ -229,9 +232,23 @@ interface PlannedTrace {
    * lead channel's.
    */
   readonly channelStartUs: number;
-  readonly read: PlannedRead;
-  /** Second read of a montage pair. Its samples are subtracted from `read`'s. */
+  /**
+   * The reads that make the trace, in time order, one segment each. A trace has one
+   * read, except a raw read of a channel with runs: that has one per run in the window,
+   * or one empty read when no run overlaps it.
+   */
+  readonly reads: readonly PlannedRead[];
+  /**
+   * Second read of a montage pair. Its samples are subtracted from the trace's only
+   * read.
+   */
   readonly secondaryRead?: PlannedRead;
+}
+
+/** A continuous channel and the level a query reads from it. */
+interface Target {
+  readonly entry: ContinuousEntry;
+  readonly level: LevelInfo;
 }
 
 /** A read settled to a value or an error. */
@@ -279,8 +296,8 @@ export class StreamingClient {
   readonly #filters: FilterSession;
   #bundle: Promise<Bundle> | undefined;
   #recording: Promise<RecordingInfo | undefined> | undefined;
-  /** Each channel's runs, read once per client lifetime. */
-  readonly #runs = new Map<string, Promise<Run[]>>();
+  /** Each channel's runs by channel index, read once per client lifetime. */
+  readonly #runs = new Map<number, Promise<Run[]>>();
 
   constructor(options: StreamingClientOptions) {
     this.#store = options.store;
@@ -296,10 +313,22 @@ export class StreamingClient {
   /**
    * Returns info for every channel in the bundle, continuous and event alike, in the
    * bundle's order. Narrow on `kind`. Returned objects are copies.
+   *
+   * A channel with a `runs` table has its table read, concurrently with the others,
+   * for the exact `endUs` of its last run. Rejects when a table breaks the format's
+   * rules.
    */
   async channelInfo(): Promise<ChannelInfo[]> {
     const { catalog } = await this.#loadBundle();
-    return catalog.channels.map((entry) => ({ ...entry.info }));
+    return Promise.all(
+      catalog.channels.map(async (entry): Promise<ChannelInfo> => {
+        if (entry.kind !== "continuous" || entry.runs === undefined) {
+          return { ...entry.info };
+        }
+        const runs = await this.#runsOf(entry, "viewport");
+        return { ...entry.info, endUs: runs[runs.length - 1]!.endUs };
+      }),
+    );
   }
 
   /**
@@ -323,32 +352,20 @@ export class StreamingClient {
    * every span of samples recorded one period apart.
    *
    * A channel that never paused has one run covering its extent, and an empty channel
-   * has none. Reads are placed on the sample grid, so a sample after a pause can sit
-   * up to one period from its exact time; this is where the exact times live. Read
-   * once per channel and cached for the client's lifetime. Rejects for an unknown
+   * has none. A raw read of a channel with runs delivers one segment per run at these
+   * times. Read once per channel and cached for the client's lifetime. Rejects for an unknown
    * channel id, an event channel, or a `runs` table that breaks the format's rules;
    * the next call retries. An aborted caller is rejected and the read finishes for
    * the others.
    */
   async runs(params: RunOptions): Promise<Run[]> {
     params.signal?.throwIfAborted();
-    let pending = this.#runs.get(params.channel);
-    if (pending === undefined) {
-      // The read carries no signal. Callers share it, so one caller giving up must
-      // not reject the rest, and the table is small enough to let it finish.
-      pending = this.#loadBundle()
-        .then(({ catalog, store }) => {
-          const entry = continuousEntry(catalog, params.channel);
-          return this.#limit(params.priority ?? "viewport", () =>
-            readRuns(store, entry),
-          );
-        })
-        .catch((error: unknown) => {
-          this.#runs.delete(params.channel);
-          throw error;
-        });
-      this.#runs.set(params.channel, pending);
-    }
+    const pending = this.#loadBundle().then(({ catalog }) =>
+      this.#runsOf(
+        continuousEntry(catalog, params.channel),
+        params.priority ?? "viewport",
+      ),
+    );
     return params.signal === undefined
       ? pending
       : abortable(pending, params.signal);
@@ -361,14 +378,22 @@ export class StreamingClient {
    * Each trace reads the coarsest pyramid level whose bins fit within one pixel. A filter,
    * a montage, or `raw: true` forces the raw level. Reads of the raw level totaling more
    * than the byte cap throw {@link RawReadTooLargeError}, whether forced or selected by
-   * the pixel width. Unless `raw` is set, output is resampled onto the pixel grid when one
-   * pixel spans more than `RESAMPLE_PIXEL_RATIO` source bins. That grid is anchored at the
-   * channel start, so every window over a channel resamples onto the same buckets.
+   * the pixel width. The cap counts the samples read. Unless `raw` is set, output is
+   * resampled onto the pixel grid when one pixel spans more than `RESAMPLE_PIXEL_RATIO`
+   * source bins. That grid is anchored at the channel start, so every window over a
+   * channel resamples onto the same buckets.
    *
-   * Segments are delivered on bin boundaries, so one may begin before `startUs` or end
-   * after `endUs` by less than one of its own bins. A filtered segment continuing from the
-   * previous query begins at the first sample that query did not return. A window with no
-   * overlap yields empty data, with `startUs` clamped to the channel's extent.
+   * A trace yields one segment. The exception is a read of the raw level of a channel
+   * with a `runs` table, whether forced or selected by the pixel width: it yields one
+   * segment per run that overlaps the window, in time order, and each starts at the exact
+   * time of its first sample. The samples of a pause are not delivered. A montage trace
+   * and a read of a pyramid level stay on the sample grid.
+   *
+   * Segments are delivered on sample or bin boundaries, so one may begin before `startUs`
+   * or end after `endUs` by less than one of its own bins. A filtered segment continuing
+   * from the previous segment begins at the first sample that segment did not return. A
+   * window with no overlap yields one segment with empty data, whose `startUs` is clamped
+   * to the channel's extent.
    *
    * Rejects when `channels` and `montage` are both supplied or both empty, and for an
    * unknown channel id, an event channel, a montage pair whose rates or sample grids
@@ -393,21 +418,33 @@ export class StreamingClient {
     const forceRaw = params.filter !== undefined || montage.length > 0 || raw;
     const { catalog, store } = await this.#loadBundle();
 
-    const traces =
-      montage.length > 0
-        ? montage.map((pair) => this.#planMontage(catalog, pair, params))
-        : channels.map((id) =>
-            this.#planChannel(catalog, id, params, forceRaw),
-          );
+    const montageTraces = montage.map((pair) =>
+      this.#planMontage(catalog, pair, params),
+    );
+    const targets = channels.map((id) => {
+      const entry = continuousEntry(catalog, id);
+      const level = forceRaw
+        ? rawLevel(entry)
+        : selectLevel(entry.levels, params.pixelWidthUs);
+      return { entry, level };
+    });
 
     // Every check of the request runs before the first read starts. A spec the filter
     // would reject on the first segment would otherwise leave every other trace's read
     // running with nothing to await it.
     if (params.filter !== undefined) {
-      for (const rateHz of new Set(traces.map((trace) => trace.rateHz))) {
+      const rates = [
+        ...montageTraces.map((trace) => trace.rateHz),
+        ...targets.map(({ entry }) => entry.info.rateHz),
+      ];
+      for (const rateHz of new Set(rates)) {
         assertFilterSpec(params.filter, rateHz);
       }
     }
+    const traces =
+      montage.length > 0
+        ? montageTraces
+        : await this.#planChannels(targets, params);
     assertWithinByteCap(traces, params.maxRawBytes ?? this.#maxRawBytes);
 
     // One signal for every read of the query: the caller's abort reaches it, and so
@@ -423,7 +460,9 @@ export class StreamingClient {
     // Settling each read up front avoids unhandled rejections when iteration stops early.
     const started = traces.map((trace) => ({
       trace,
-      lead: this.#startRead(store, trace.read, opts, priority),
+      leads: trace.reads.map((read) =>
+        this.#startRead(store, read, opts, priority),
+      ),
       secondary:
         trace.secondaryRead === undefined
           ? undefined
@@ -432,33 +471,36 @@ export class StreamingClient {
 
     let drained = false;
     try {
-      for (const { trace, lead, secondary } of started) {
-        const first = unwrapRead(await lead);
-        const second =
-          secondary === undefined ? undefined : unwrapRead(await secondary);
+      for (const { trace, leads, secondary } of started) {
+        for (const [piece, lead] of leads.entries()) {
+          const read = trace.reads[piece]!;
+          const first = unwrapRead(await lead);
+          const second =
+            secondary === undefined ? undefined : unwrapRead(await secondary);
 
-        let segment: Segment = {
-          channel: trace.channel,
-          startUs: trace.read.startUs,
-          samplePeriodUs: trace.read.level.periodUs,
-          isMinMax: trace.read.level.isMinMax,
-          data: second === undefined ? first : subtract(first, second),
-        };
+          let segment: Segment = {
+            channel: trace.channel,
+            startUs: read.startUs,
+            samplePeriodUs: read.level.periodUs,
+            isMinMax: read.level.isMinMax,
+            data: second === undefined ? first : subtract(first, second),
+          };
 
-        if (params.filter) {
-          segment = this.#filters.apply(segment, params.filter, trace.rateHz);
+          if (params.filter) {
+            segment = this.#filters.apply(segment, params.filter, trace.rateHz);
+          }
+          if (
+            !raw &&
+            params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
+          ) {
+            segment = resampleToPixels(
+              segment,
+              params.pixelWidthUs,
+              trace.channelStartUs,
+            );
+          }
+          yield segment;
         }
-        if (
-          !raw &&
-          params.pixelWidthUs > RESAMPLE_PIXEL_RATIO * segment.samplePeriodUs
-        ) {
-          segment = resampleToPixels(
-            segment,
-            params.pixelWidthUs,
-            trace.channelStartUs,
-          );
-        }
-        yield segment;
       }
       drained = true;
     } finally {
@@ -600,8 +642,11 @@ export class StreamingClient {
    * or, on a level without `count`, when its min/max is finite. Consecutive populated
    * bins merge into one span, and gaps no wider than `gapThresholdUs` are bridged. Span
    * edges align to that level's bin boundaries, rounded outward to whole microseconds,
-   * and stay inside the channel's `startUs` and `endUs`. Throws for an unknown
-   * channel id, an event channel, or an `endUs` before `startUs`.
+   * and stay inside the channel's `startUs` and `endUs`.
+   *
+   * A channel without levels reads its raw samples, and a sample is populated when it is
+   * finite. A channel with runs then places each sample at its exact time. Throws for an
+   * unknown channel id, an event channel, or an `endUs` before `startUs`.
    */
   async dataSpans(
     params: DataSpanOptions,
@@ -614,15 +659,31 @@ export class StreamingClient {
     // Levels are sorted finest-first, and a continuous channel has at least one.
     const level = entry.levels[entry.levels.length - 1]!;
 
-    const read = planRead(entry, level, params);
-    const populated = await this.#limit(params.priority ?? "background", () =>
-      readCoverage(store, level, read.range, opts),
+    const priority = params.priority ?? "background";
+    const pendingRuns =
+      entry.runs === undefined ? undefined : this.#runsOf(entry, priority);
+    const runs =
+      pendingRuns === undefined || params.signal === undefined
+        ? await pendingRuns
+        : await abortable(pendingRuns, params.signal);
+    // Samples of a channel with runs sit at the times the table gives. A level is on
+    // the grid.
+    const exactRuns = level.isMinMax ? undefined : runs;
+    const { startUs: offsetUs, rateHz } = entry.info;
+    const range =
+      exactRuns === undefined
+        ? planRead(entry, level, params).range
+        : runIndexRange(params, exactRuns, offsetUs, rateHz, level.binCount);
+    const populated = await this.#limit(priority, () =>
+      readCoverage(store, level, range, opts),
     );
 
     const gapThresholdUs = params.gapThresholdUs ?? 0;
-    const { startUs: offsetUs, rateHz } = entry.info;
     const lowUs = Math.max(params.startUs, entry.info.startUs);
-    const highUs = Math.min(params.endUs, entry.info.endUs);
+    const highUs = Math.min(
+      params.endUs,
+      runs === undefined ? entry.info.endUs : runs[runs.length - 1]!.endUs,
+    );
     const spans: Array<[startUs: number, endUs: number]> = [];
 
     // Each run of populated bins is one span: the floor of its first bin's start to
@@ -630,23 +691,39 @@ export class StreamingClient {
     const addSpan = (firstBin: number, stopBin: number): void => {
       const spanStartUs = Math.max(
         lowUs,
-        binEdgeUs(
-          read.range.start + firstBin,
-          offsetUs,
-          rateHz,
-          level.samplesPerBin,
-          "floor",
-        ),
+        exactRuns === undefined
+          ? binEdgeUs(
+              range.start + firstBin,
+              offsetUs,
+              rateHz,
+              level.samplesPerBin,
+              "floor",
+            )
+          : entryEdgeUs(
+              range.start + firstBin,
+              offsetUs,
+              rateHz,
+              exactRuns,
+              "start",
+            ),
       );
       const spanEndUs = Math.min(
         highUs,
-        binEdgeUs(
-          read.range.start + stopBin,
-          offsetUs,
-          rateHz,
-          level.samplesPerBin,
-          "ceil",
-        ),
+        exactRuns === undefined
+          ? binEdgeUs(
+              range.start + stopBin,
+              offsetUs,
+              rateHz,
+              level.samplesPerBin,
+              "ceil",
+            )
+          : entryEdgeUs(
+              range.start + stopBin - 1,
+              offsetUs,
+              rateHz,
+              exactRuns,
+              "end",
+            ),
       );
       if (spanStartUs >= spanEndUs) {
         return;
@@ -710,23 +787,57 @@ export class StreamingClient {
     };
   }
 
-  /** Plans the trace for one channel. */
-  #planChannel(
-    catalog: BundleCatalog,
-    id: string,
+  /**
+   * Returns a channel's runs, reading them on first use. Callers share one read, so it
+   * carries no signal: one caller giving up must not reject the rest, and the table is
+   * small enough to let it finish. A failed read is dropped so the next call retries.
+   */
+  #runsOf(entry: ContinuousEntry, priority: ReadPriority): Promise<Run[]> {
+    const { index } = entry.info;
+    let pending = this.#runs.get(index);
+    if (pending === undefined) {
+      const read: Promise<Run[]> = this.#loadBundle()
+        .then(({ store }) =>
+          this.#limit(priority, () => readRuns(store, entry)),
+        )
+        .catch((error: unknown) => {
+          if (this.#runs.get(index) === read) {
+            this.#runs.delete(index);
+          }
+          throw error;
+        });
+      pending = read;
+      this.#runs.set(index, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * Plans the traces of channel reads. A read of the raw level of a channel with runs
+   * waits for the runs, which place its samples.
+   */
+  async #planChannels(
+    targets: readonly Target[],
     params: QueryOptions,
-    forceRaw: boolean,
-  ): PlannedTrace {
-    const entry = continuousEntry(catalog, id);
-    const level = forceRaw
-      ? rawLevel(entry)
-      : selectLevel(entry.levels, params.pixelWidthUs);
-    return {
-      channel: id,
+  ): Promise<PlannedTrace[]> {
+    const priority = params.priority ?? "viewport";
+    const tables = await Promise.all(
+      targets.map(({ entry, level }) => {
+        if (level.isMinMax || entry.runs === undefined) {
+          return undefined;
+        }
+        const pending = this.#runsOf(entry, priority);
+        return params.signal === undefined
+          ? pending
+          : abortable(pending, params.signal);
+      }),
+    );
+    return targets.map(({ entry, level }, position) => ({
+      channel: entry.info.id,
       rateHz: entry.info.rateHz,
       channelStartUs: entry.info.startUs,
-      read: planRead(entry, level, params),
-    };
+      reads: planReads(entry, level, params, tables[position]),
+    }));
   }
 
   /** Plans the trace for a montage pair: two raw reads over the pair's shared window. */
@@ -781,7 +892,7 @@ export class StreamingClient {
       channel: montageChannelKey(lead.info, secondary.info),
       rateHz: lead.info.rateHz,
       channelStartUs: lead.info.startUs,
-      read: readOf(lead, leadRaw, start),
+      reads: [readOf(lead, leadRaw, start)],
       secondaryRead: readOf(secondary, secondaryRaw, start + shift),
     };
   }
@@ -847,7 +958,7 @@ function assertWithinByteCap(
   const requestedBytes = traces.reduce(
     (sum, trace) =>
       sum +
-      readBytes(trace.read) +
+      trace.reads.reduce((bytes, read) => bytes + readBytes(read), 0) +
       (trace.secondaryRead === undefined ? 0 : readBytes(trace.secondaryRead)),
     0,
   );
@@ -882,6 +993,9 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     const onAbort = (): void => {
       reject(signal.reason);
     };
+    if (signal.aborted) {
+      onAbort();
+    }
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(resolve, reject).finally(() => {
       signal.removeEventListener("abort", onAbort);
@@ -968,6 +1082,63 @@ function eventEntry(catalog: BundleCatalog, id: string): EventEntry {
 function rawLevel(entry: ContinuousEntry): LevelInfo {
   // readCatalog rejects a continuous channel that has no raw array.
   return entry.levels.find((level) => !level.isMinMax)!;
+}
+
+/**
+ * Plans the reads of one level over a window, one segment each.
+ *
+ * `runs` is the channel's runs table, given for a read of the raw level of a channel
+ * that has one. The reads are then one per run that overlaps the window, each at the
+ * exact time of its first sample. The samples of a pause hold no data and are not read.
+ * A window that overlaps no run plans one empty read.
+ */
+function planReads(
+  entry: ContinuousEntry,
+  level: LevelInfo,
+  window: { startUs: number; endUs: number },
+  runs: readonly Run[] | undefined,
+): PlannedRead[] {
+  if (runs === undefined) {
+    return [planRead(entry, level, window)];
+  }
+  const { startUs: offsetUs, rateHz } = entry.info;
+  const span = runIndexRange(window, runs, offsetUs, rateHz, level.binCount);
+  const reads: PlannedRead[] = [];
+  // Skip the runs that end before the range starts.
+  let low = 0;
+  let high = runs.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const run = runs[middle]!;
+    if (run.firstSample + run.sampleCount <= span.start) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  for (const run of runs.slice(low)) {
+    if (run.firstSample >= span.end) {
+      break;
+    }
+    const start = Math.max(span.start, run.firstSample);
+    const end = Math.min(span.end, run.firstSample + run.sampleCount);
+    if (end > start) {
+      reads.push({
+        level,
+        range: { start, end },
+        startUs: entryTimeUs(start, offsetUs, rateHz, runs),
+      });
+    }
+  }
+  return reads.length > 0
+    ? reads
+    : [
+        {
+          level,
+          range: { start: span.start, end: span.start },
+          startUs: entryTimeUs(span.start, offsetUs, rateHz, runs),
+        },
+      ];
 }
 
 /** Plans a read of one level, clamped to a window. */

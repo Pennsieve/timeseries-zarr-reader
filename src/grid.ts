@@ -7,6 +7,8 @@
  * sample per entry.
  */
 
+import type { Run } from "./types.js";
+
 const MICROSECONDS_PER_SECOND = 1e6;
 const MICROSECONDS_BIG = 1_000_000n;
 
@@ -49,6 +51,34 @@ function floorDivide(numerator: bigint, denominator: bigint): bigint {
 function ceilDivide(numerator: bigint, denominator: bigint): bigint {
   const quotient = numerator / denominator;
   return numerator % denominator > 0n ? quotient + 1n : quotient;
+}
+
+/**
+ * Returns the entry index of a finite time, rounded by `round` and not clamped.
+ *
+ * Entry `i` starts at `originUs + i * samplesPerBin * 1e6 / rateHz`, so a time `t` lies at
+ * index `(t - originUs) * rateHz / (samplesPerBin * 1e6)`. The quotient is exact.
+ */
+function exactIndex(
+  timeUs: number,
+  originUs: number,
+  rateHz: number,
+  samplesPerBin: number,
+  round: (numerator: bigint, denominator: bigint) => bigint,
+): bigint {
+  const time = toDyadic(timeUs);
+  const origin = toDyadic(originUs);
+  const rate = toDyadic(rateHz);
+  const shift = Math.max(time.shift, origin.shift);
+  const difference =
+    (time.numerator << BigInt(shift - time.shift)) -
+    (origin.numerator << BigInt(shift - origin.shift));
+  return round(
+    difference * rate.numerator,
+    (1n << BigInt(shift + rate.shift)) *
+      BigInt(samplesPerBin) *
+      MICROSECONDS_BIG,
+  );
 }
 
 function requireRate(rateHz: number): void {
@@ -124,10 +154,6 @@ export function binIndexRange(
   const clamp = (index: bigint): bigint =>
     index < 0n ? 0n : index > bigLength ? bigLength : index;
 
-  // Entry `i` starts at `offsetUs + i * samplesPerBin * 1e6 / rateHz`, so a time `t`
-  // lies at index `(t - offsetUs) * rateHz / (samplesPerBin * 1e6)`.
-  const offset = toDyadic(offsetUs);
-  const rate = toDyadic(rateHz);
   const divide = (
     timeUs: number,
     round: (numerator: bigint, denominator: bigint) => bigint,
@@ -138,19 +164,7 @@ export function binIndexRange(
     if (timeUs === -Infinity) {
       return 0n;
     }
-    const time = toDyadic(timeUs);
-    const shift = Math.max(time.shift, offset.shift);
-    const difference =
-      (time.numerator << BigInt(shift - time.shift)) -
-      (offset.numerator << BigInt(shift - offset.shift));
-    return clamp(
-      round(
-        difference * rate.numerator,
-        (1n << BigInt(shift + rate.shift)) *
-          BigInt(samplesPerBin) *
-          MICROSECONDS_BIG,
-      ),
-    );
+    return clamp(exactIndex(timeUs, offsetUs, rateHz, samplesPerBin, round));
   };
 
   const start = divide(startUs, floorDivide);
@@ -266,4 +280,152 @@ export function countBinStartUs(
   periodUs: number,
 ): number {
   return offsetUs + index * periodUs;
+}
+
+/** The fields of a run that place its samples in time. */
+type RunTimes = Pick<Run, "firstSample" | "sampleCount" | "startUs">;
+
+/** Returns the number of runs that satisfy `before`, which holds for a prefix of them. */
+function countWhile(
+  runs: readonly RunTimes[],
+  before: (run: RunTimes) => boolean,
+): number {
+  let low = 0;
+  let high = runs.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (before(runs[middle]!)) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/**
+ * Returns the half-open index range of the raw samples that overlap the window
+ * `[startUs, endUs)`, for a channel with a runs table.
+ *
+ * A sample inside a run starts at the exact time the table gives. A sample between two
+ * runs starts at its grid time. An entry that starts exactly at `endUs` is outside the
+ * range, and a window of zero width or outside the channel gives an empty range. The
+ * range is exact, as in {@link binIndexRange}, and may be infinite at either end.
+ *
+ * Throws a RangeError when `endUs` precedes `startUs`, either bound is NaN, or `rateHz`
+ * is not a finite number above 0.
+ */
+export function runIndexRange(
+  window: { readonly startUs: number; readonly endUs: number },
+  runs: readonly RunTimes[],
+  offsetUs: number,
+  rateHz: number,
+  length: number,
+): { start: number; end: number } {
+  const { startUs, endUs } = window;
+  if (Number.isNaN(startUs) || Number.isNaN(endUs) || endUs < startUs) {
+    throw new RangeError(
+      `endUs must not precede startUs (got ${startUs} and ${endUs})`,
+    );
+  }
+  requireRate(rateHz);
+
+  const bigLength = BigInt(length);
+  // The index of the sample that a time falls in, from the run `row` or the grid. A
+  // time past the end of its run lands on the grid, between that run and the next.
+  const locate = (
+    timeUs: number,
+    row: number,
+    round: (numerator: bigint, denominator: bigint) => bigint,
+  ): number => {
+    const run = runs[row]!;
+    const runEnd = BigInt(run.firstSample + run.sampleCount);
+    const following = BigInt(runs[row + 1]?.firstSample ?? length);
+    let index =
+      BigInt(run.firstSample) +
+      exactIndex(timeUs, run.startUs, rateHz, 1, round);
+    if (index >= runEnd) {
+      const grid = exactIndex(timeUs, offsetUs, rateHz, 1, round);
+      const low = grid > runEnd ? grid : runEnd;
+      index = low < following ? low : following;
+    }
+    return Number(index < bigLength ? index : bigLength);
+  };
+
+  let first = 0;
+  if (startUs === Infinity) {
+    first = length;
+  } else if (startUs > -Infinity) {
+    const row = countWhile(runs, (run) => run.startUs <= startUs) - 1;
+    if (row >= 0) {
+      first = locate(startUs, row, floorDivide);
+    }
+  }
+  if (endUs === startUs) {
+    return { start: first, end: first };
+  }
+
+  let stop = length;
+  if (endUs === -Infinity) {
+    stop = 0;
+  } else if (endUs < Infinity) {
+    const row = countWhile(runs, (run) => run.startUs < endUs) - 1;
+    stop = row >= 0 ? locate(endUs, row, ceilDivide) : 0;
+  }
+  return { start: first, end: Math.max(stop, first) };
+}
+
+/**
+ * Returns the start time of raw sample `index`, in microseconds.
+ *
+ * A sample inside a run is at the run's `startUs` plus its distance from the run's first
+ * sample, and any other sample is at its grid time. Both are evaluated in binary64 in the
+ * order of {@link binStartUs}. Pass no `runs` for a channel without a runs table.
+ */
+export function entryTimeUs(
+  index: number,
+  offsetUs: number,
+  rateHz: number,
+  runs?: readonly RunTimes[],
+): number {
+  if (runs !== undefined) {
+    const row = countWhile(runs, (run) => run.firstSample <= index) - 1;
+    const run = runs[row];
+    if (run !== undefined && index < run.firstSample + run.sampleCount) {
+      return binStartUs(index - run.firstSample, run.startUs, rateHz, 1);
+    }
+  }
+  return binStartUs(index, offsetUs, rateHz, 1);
+}
+
+/**
+ * Returns the start or the end of raw sample `index` as a whole number of microseconds,
+ * rounded down for a start and up for an end.
+ *
+ * The time is exact where {@link entryTimeUs} is binary64. A sample ends one sample
+ * period after it starts.
+ */
+export function entryEdgeUs(
+  index: number,
+  offsetUs: number,
+  rateHz: number,
+  runs: readonly RunTimes[] | undefined,
+  side: "start" | "end",
+): number {
+  const rounding = side === "start" ? "floor" : "ceil";
+  const past = side === "start" ? 0 : 1;
+  if (runs !== undefined) {
+    const row = countWhile(runs, (run) => run.firstSample <= index) - 1;
+    const run = runs[row];
+    if (run !== undefined && index < run.firstSample + run.sampleCount) {
+      return binEdgeUs(
+        index - run.firstSample + past,
+        run.startUs,
+        rateHz,
+        1,
+        rounding,
+      );
+    }
+  }
+  return binEdgeUs(index + past, offsetUs, rateHz, 1, rounding);
 }

@@ -12,6 +12,7 @@ import type {
   ChannelInfo,
   ContinuousChannelInfo,
   EventChannelInfo,
+  Segment,
   Store,
   StoreOptions,
 } from "./types.js";
@@ -1687,10 +1688,10 @@ describe("runs", () => {
       { firstSample: 0, sampleCount: 4, startUs: 1_000_000, endUs: 1_004_000 },
       { firstSample: 6, sampleCount: 4, startUs: 1_006_400, endUs: 1_010_400 },
     ]);
-    // The channel's own extent stays on the grid.
+    // The channel ends where its last run does.
     const info = continuousById(await client.channelInfo(), "p");
     expect([info.runs, info.startUs, info.endUs]).toEqual([
-      2, 1_000_000, 1_010_000,
+      2, 1_000_000, 1_010_400,
     ]);
   });
 
@@ -1774,6 +1775,271 @@ describe("runs", () => {
     late.abort(new Error("late gave up"));
     await expect(lateCall).rejects.toThrow(/late gave up/);
     expect((await client.runs({ channel: "q" })).length).toBe(1);
+  });
+
+  describe("raw reads", () => {
+    const query = (
+      client: StreamingClient,
+      startUs: number,
+      endUs: number,
+      extra: Partial<Parameters<StreamingClient["query"]>[0]> = {},
+    ) =>
+      collect(
+        client.query({
+          channels: ["p"],
+          startUs,
+          endUs,
+          pixelWidthUs: 1000,
+          raw: true,
+          ...extra,
+        }),
+      );
+    const pieces = (segments: readonly Segment[]) =>
+      segments.map((segment) => [segment.startUs, Array.from(segment.data)]);
+
+    test("yields one segment per run at the exact time of its first sample", async () => {
+      const client = makeClient([PAUSED]);
+      const segments = await query(client, 1_000_000, 1_010_400);
+      expect(pieces(segments)).toEqual([
+        [1_000_000, [0, 1, 2, 3]],
+        [1_006_400, [6, 7, 8, 9]],
+      ]);
+      expect(segments.map((segment) => segment.channel)).toEqual(["p", "p"]);
+      expect(segments.every((segment) => !segment.isMinMax)).toBe(true);
+    });
+
+    test("selects the raw level by pixel width without raw set", async () => {
+      const client = makeClient([PAUSED]);
+      const segments = await query(client, 1_000_000, 1_010_400, {
+        raw: false,
+      });
+      expect(pieces(segments)).toEqual([
+        [1_000_000, [0, 1, 2, 3]],
+        [1_006_400, [6, 7, 8, 9]],
+      ]);
+    });
+
+    test("cuts the first and last run at the window", async () => {
+      const client = makeClient([PAUSED]);
+      // Sample 1 spans [1_001_000, 1_002_000) and sample 7 starts at 1_007_400.
+      const segments = await query(client, 1_001_500, 1_007_500);
+      expect(pieces(segments)).toEqual([
+        [1_001_000, [1, 2, 3]],
+        [1_006_400, [6, 7]],
+      ]);
+    });
+
+    test("starts a segment inside a run at that sample's time", async () => {
+      const client = makeClient([PAUSED]);
+      const segments = await query(client, 1_007_500, 1_009_000);
+      expect(pieces(segments)).toEqual([[1_007_400, [7, 8]]]);
+    });
+
+    test("yields one empty segment for a window inside the pause", async () => {
+      const client = makeClient([PAUSED]);
+      const segments = await query(client, 1_004_000, 1_006_000);
+      expect(pieces(segments)).toEqual([[1_004_000, []]]);
+    });
+
+    test("yields one empty segment for a window outside the channel", async () => {
+      const client = makeClient([PAUSED]);
+      expect(pieces(await query(client, 0, 500_000))).toEqual([
+        [1_000_000, []],
+      ]);
+      expect(pieces(await query(client, 2_000_000, 3_000_000))).toEqual([
+        [1_010_000, []],
+      ]);
+    });
+
+    test("keeps a trace without a table in one segment on the grid", async () => {
+      const client = makeClient([PAUSED, PLAIN]);
+      const segments = await query(client, 1_000_000, 1_003_000, {
+        channels: ["q"],
+      });
+      expect(pieces(segments)).toEqual([[1_000_000, [1, 2, 3]]]);
+    });
+
+    test("yields each trace's segments in request order", async () => {
+      const client = makeClient([PAUSED, PLAIN]);
+      const segments = await query(client, 1_000_000, 1_010_400, {
+        channels: ["q", "p"],
+      });
+      expect(segments.map((segment) => segment.channel)).toEqual([
+        "q",
+        "p",
+        "p",
+      ]);
+    });
+
+    test("counts the samples read against the byte cap, not the pause", async () => {
+      const client = makeClient([PAUSED]);
+      // Eight samples of four bytes. The grid between the first and last holds ten.
+      const segments = await query(client, 1_000_000, 1_010_400, {
+        maxRawBytes: 32,
+      });
+      expect(segments).toHaveLength(2);
+      await expect(
+        query(client, 1_000_000, 1_010_400, { maxRawBytes: 31 }),
+      ).rejects.toBeInstanceOf(RawReadTooLargeError);
+    });
+
+    test("reads the runs once for a query and the calls that follow", async () => {
+      const counting = createCountingStore(
+        createMemoryStore(bundleFiles([PAUSED])),
+      );
+      const client = new StreamingClient({ store: counting.store });
+      await query(client, 1_000_000, 1_010_400);
+      await client.runs({ channel: "p" });
+      await client.channelInfo();
+      expect(counting.reads.get("/0/runs/c/0/0")).toBe(1);
+    });
+
+    test("keeps a montage on the grid", async () => {
+      const partner: FixtureChannel = {
+        index: 1,
+        tsz: tszOf("r"),
+        raw: TEN.map((value) => 2 * value),
+      };
+      const client = makeClient([PAUSED, partner]);
+      const [segment] = await collect(
+        client.query({
+          montage: [{ lead: "p", secondary: "r" }],
+          startUs: 1_000_000,
+          endUs: 1_010_400,
+          pixelWidthUs: 1000,
+        }),
+      );
+      expect([segment!.startUs, Array.from(segment!.data)]).toEqual([
+        1_000_000,
+        TEN.map((value) => 0 - value),
+      ]);
+    });
+
+    test("rejects an unknown channel before reading the runs", async () => {
+      const counting = createCountingStore(
+        createMemoryStore(bundleFiles([PAUSED])),
+      );
+      const client = new StreamingClient({ store: counting.store });
+      await expect(
+        query(client, 1_000_000, 1_010_400, { channels: ["p", "nope"] }),
+      ).rejects.toThrow(/no channel with id nope/);
+      expect(counting.reads.get("/0/runs/c/0/0")).toBeUndefined();
+    });
+
+    test("rejects an aborted signal while the runs load", async () => {
+      const client = makeClient([PAUSED]);
+      const controller = new AbortController();
+      const pending = query(client, 1_000_000, 1_010_400, {
+        signal: controller.signal,
+      });
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toThrow(/stop/);
+    });
+  });
+
+  describe("filtered reads", () => {
+    const spec = { type: "lowpass", order: 2, cutoffHz: 100 } as const;
+    const ramp = (count: number): number[] =>
+      Array.from({ length: count }, (_, i) =>
+        Math.fround(Math.sin(i / 3) * 10 + i),
+      );
+    const filteredRuns = async (channel: FixtureChannel, endUs: number) =>
+      collect(
+        makeClient([channel]).query({
+          channels: ["p"],
+          startUs: 1_000_000,
+          endUs,
+          pixelWidthUs: 1000,
+          raw: true,
+          filter: spec,
+        }),
+      );
+
+    test("continues the filter across a pause shorter than the reset gap", async () => {
+      const [first, second] = await filteredRuns(PAUSED, 1_010_400);
+      const expected = createFilter(spec, 1000).process(
+        Float64Array.from([0, 1, 2, 3, 6, 7, 8, 9]),
+      );
+      expect(Array.from(first!.data)).toEqual(Array.from(expected.slice(0, 4)));
+      expect(Array.from(second!.data)).toEqual(Array.from(expected.slice(4)));
+    });
+
+    test("restarts the filter after a pause longer than the reset gap", async () => {
+      // 400 samples, a pause of 200 grid samples, and a resume 0.4 periods late.
+      const raw = ramp(400);
+      const channel: FixtureChannel = {
+        index: 0,
+        tsz: tszOf("p"),
+        raw,
+        runs: [
+          [0, 100, 1_000_000],
+          [300, 100, 1_300_400],
+        ],
+      };
+      const [first, second] = await filteredRuns(channel, 1_400_400);
+      const before = Float64Array.from(raw.slice(0, 100));
+      const after = Float64Array.from(raw.slice(300));
+      expect(Array.from(first!.data)).toEqual(
+        Array.from(createFilter(spec, 1000).process(before)),
+      );
+      expect(Array.from(second!.data)).toEqual(
+        Array.from(createFilter(spec, 1000).process(after)),
+      );
+    });
+
+    test("continues the filter across a resume less than one period off the grid", async () => {
+      // No pause: the second run follows the first and starts 0.4 periods late.
+      const raw = ramp(8);
+      const channel: FixtureChannel = {
+        index: 0,
+        tsz: tszOf("p"),
+        raw,
+        runs: [
+          [0, 4, 1_000_000],
+          [4, 4, 1_004_400],
+        ],
+      };
+      const [first, second] = await filteredRuns(channel, 1_008_400);
+      const expected = createFilter(spec, 1000).process(Float64Array.from(raw));
+      expect(Array.from(first!.data)).toEqual(Array.from(expected.slice(0, 4)));
+      expect(Array.from(second!.data)).toEqual(Array.from(expected.slice(4)));
+    });
+  });
+
+  test("ends the channel where its last run does, in info and data spans", async () => {
+    const channel: FixtureChannel = {
+      ...PAUSED,
+      raw: [0, 1, 2, 3, NaN, NaN, 6, 7, 8, 9],
+    };
+    const client = makeClient([channel]);
+    const info = continuousById(await client.channelInfo(), "p");
+    expect(info.endUs).toBe(1_010_400);
+    expect(
+      await client.dataSpans({
+        channel: "p",
+        startUs: 0,
+        endUs: 2_000_000,
+      }),
+    ).toEqual([
+      [1_000_000, 1_004_000],
+      [1_006_400, 1_010_400],
+    ]);
+  });
+
+  test("clamps data spans to the window at exact sample times", async () => {
+    const channel: FixtureChannel = {
+      ...PAUSED,
+      raw: [0, 1, 2, 3, NaN, NaN, 6, 7, 8, 9],
+    };
+    const client = makeClient([channel]);
+    expect(
+      await client.dataSpans({
+        channel: "p",
+        startUs: 1_002_000,
+        endUs: 1_008_000,
+        gapThresholdUs: 2400,
+      }),
+    ).toEqual([[1_002_000, 1_008_000]]);
   });
 
   test("rejects an event channel, an unknown id, and an aborted signal", async () => {
@@ -2052,14 +2318,15 @@ describe("acceptance: committed bundle", () => {
     ]);
   });
 
-  test("reads a paused channel: exact runs, NaN on the grid between them", async () => {
+  test("reads a paused channel: one raw segment per run at the table's times", async () => {
     const client = new StreamingClient({ store: await openBundle(BUNDLE) });
     const info = continuousById(await client.channelInfo(), "pausedA");
-    expect([info.runs, info.startUs, info.endUs]).toEqual([2, 0, 22_000_000]);
+    expect([info.runs, info.startUs, info.endUs]).toEqual([2, 0, 22_000_400]);
 
     // The second run resumed 0.4 ms past grid sample 12,000, which the grid cannot
     // say and the table does.
-    expect(await client.runs({ channel: "pausedA" })).toEqual([
+    const runs = await client.runs({ channel: "pausedA" });
+    expect(runs).toEqual([
       { firstSample: 0, sampleCount: 10_000, startUs: 0, endUs: 10_000_000 },
       {
         firstSample: 12_000,
@@ -2069,8 +2336,28 @@ describe("acceptance: committed bundle", () => {
       },
     ]);
 
-    // Raw samples across the pause: the grid holds NaN where nothing was recorded.
-    const segment = await collectOne(
+    const whole = await collect(
+      client.query({
+        channels: ["pausedA"],
+        startUs: info.startUs,
+        endUs: info.endUs,
+        pixelWidthUs: 1000,
+        raw: true,
+      }),
+    );
+    expect(whole.map((segment) => segment.startUs)).toEqual(
+      runs.map((run) => run.startUs),
+    );
+    expect(whole.map((segment) => segment.data.length)).toEqual(
+      runs.map((run) => run.sampleCount),
+    );
+    expect(whole.every((segment) => segment.data.every(Number.isFinite))).toBe(
+      true,
+    );
+
+    // A window across the pause holds the last sample of the first run and the first
+    // two of the second. The pause adds no samples.
+    const across = await collect(
       client.query({
         channels: ["pausedA"],
         startUs: 9_999_000,
@@ -2079,22 +2366,34 @@ describe("acceptance: committed bundle", () => {
         raw: true,
       }),
     );
-    const data = Array.from(segment.data);
-    expect([segment.startUs, data.length]).toEqual([9_999_000, 2003]);
-    expect(Number.isFinite(data[0]) && Number.isFinite(data[2001])).toBe(true);
-    expect(data.slice(1, 2001).every(Number.isNaN)).toBe(true);
+    expect(
+      across.map((segment) => [segment.startUs, segment.data.length]),
+    ).toEqual([
+      [9_999_000, 1],
+      [12_000_400, 2],
+    ]);
 
-    // The coarsest level has 64 ms bins. The pause empties the bins inside it, and
-    // the two bins straddling its edges keep the samples they recorded.
+    // The coarsest level has 64 ms bins on the grid. A level read stays one segment, and
+    // the pause empties the bins inside it. The two bins straddling its edges keep the
+    // samples they recorded.
+    const level = await collectOne(
+      client.query({
+        channels: ["pausedA"],
+        startUs: 0,
+        endUs: 22_000_000,
+        pixelWidthUs: 64_000,
+      }),
+    );
+    expect([level.isMinMax, level.startUs]).toEqual([true, 0]);
     expect(
       await client.dataSpans({
         channel: "pausedA",
         startUs: 0,
-        endUs: 22_000_000,
+        endUs: 22_000_400,
       }),
     ).toEqual([
       [0, 10_048_000],
-      [11_968_000, 22_000_000],
+      [11_968_000, 22_000_400],
     ]);
   });
 

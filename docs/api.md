@@ -40,9 +40,10 @@ order. `ChannelInfo` is a union discriminated on `kind`:
 
 - `ContinuousChannelInfo` (`kind: "continuous"`): `index`, `id`, `name`, `unit`,
   `rateHz`, `startUs`, `endUs`, `runs`, and an optional `provenance`. `endUs` is
-  exclusive, one period past the last sample of the channel's grid, rounded up to a
-  whole microsecond. `runs` is the
-  number of runs: 1 for a channel that never paused, 0 for an empty one;
+  exclusive, one period past the channel's last sample, rounded up to a whole
+  microsecond. A channel with runs ends where its last run does, and
+  `channelInfo()` reads its `runs` table for that. `runs` is the number of runs:
+  1 for a channel that never paused, 0 for an empty one;
   [`runs()`](#runsoptions) reads them.
 - `EventChannelInfo` (`kind: "event"`): `index`, `id`, `name`, `eventCount`, `columns`
   (the optional per-event columns the channel stores, from `durations`, `labels`,
@@ -78,7 +79,9 @@ its keys resolves to an empty record.
 
 ## `query(options)`
 
-Returns an async iterable of `Segment`, one per requested trace, in request order.
+Returns an async iterable of `Segment`, one per requested trace, in request
+order. A raw read of a channel with runs yields one segment per run instead; see
+[Delivery boundaries](#delivery-boundaries).
 
 `startUs`, `endUs`, and `pixelWidthUs` are required. Pass either `channels` or `montage`
 to name the traces:
@@ -127,10 +130,11 @@ bucket apart.
 
 ### The raw-read byte cap
 
-`maxRawBytes` bounds a query's reads of the raw level, forced or selected. The figure
-counted is the uncompressed size of the raw samples requested, summed across traces, and
-both sides of a montage pair count. A pixel width that selects a min/max level reads a
-bounded number of bins and is not counted.
+`maxRawBytes` bounds a query's reads of the raw level, forced or selected. The
+figure counted is the uncompressed size of the raw samples read, summed across
+traces, and both sides of a montage pair count. The samples of a pause are not
+read and not counted. A pixel width that selects a min/max level reads a bounded
+number of bins and is not counted.
 
 A read over the cap rejects with `RawReadTooLargeError` before fetching anything. The
 error carries `requestedBytes` and `maxBytes`. Narrow the window or raise `maxRawBytes`.
@@ -183,21 +187,31 @@ splitting a batch.
 
 ### Delivery boundaries
 
-Segments are delivered on bin boundaries. A segment's `startUs` is the start of the first
-bin overlapping the window, and its data can run up to one bin past `endUs`. A window
-overlapping no data yields a segment with empty `data` and a `startUs` clamped to the
-nearest channel edge.
+Segments are delivered on sample or bin boundaries. A segment's `startUs` is the
+start of the first sample or bin overlapping the window, and a bin read can run
+up to one bin past `endUs`. A window overlapping no data yields a segment with
+empty `data` and a `startUs` clamped to the nearest channel edge.
 
-A gap inside the window arrives as NaN values inside the one segment; `query()` never
-splits a trace into several segments. A chunk the producer omitted reads as NaN too,
-which is what the format defines for a span that was never recorded. A resampled pixel
-bucket with no finite value comes back as a `[NaN, NaN]` pair, so gaps stay visible at
-every zoom.
+A gap inside a trace arrives as NaN values inside its segment. A chunk the
+producer omitted reads as NaN too, which is what the format defines for a span
+that was never recorded. A resampled pixel bucket with no finite value comes
+back as a `[NaN, NaN]` pair, so gaps stay visible at every zoom.
 
-Every sample is placed on the channel's grid, `startUs + i * samplePeriodUs`. A channel
-that paused and resumed off its grid stores the exact resume time in its `runs` table,
-and the sample after the pause then sits up to one sample period from its exact time.
-[`runs()`](#runsoptions) gives the exact times when a view needs them.
+A channel that paused and resumed stores one row per run in its `runs` table,
+each with the exact time of the run's first sample. A raw read of such a channel
+yields one segment per run that overlaps the window, in time order, whether
+`raw`, a filter, or the pixel width selected the raw level. Each segment's
+`startUs` is the exact time of its first sample, and its samples are
+`samplePeriodUs` apart. The samples of a pause hold no data and are not
+delivered. A window inside a pause yields one segment with empty `data`. A
+resampled raw read still anchors its buckets at the channel start, so a bucket
+that holds the end of one run and the start of the next appears in both
+segments.
+
+A montage trace and a read of a pyramid level stay on the channel's grid,
+`startUs + i * samplePeriodUs`. The grid places a sample after a pause up to one
+sample period from its exact time. [`runs()`](#runsoptions) gives the exact
+times.
 
 `query()` is an async generator. Validation happens on the first iteration, not on the
 call, so wrap the `for await` loop in `try`/`catch` rather than the call itself. A
@@ -212,6 +226,11 @@ montage key, separate from either constituent channel. Consecutive windows filte
 continuous signal, so a trace read window by window matches the same trace read whole. A
 backward jump of more than one sample, or a gap wider than 100 samples, restarts the
 filter for that channel.
+
+The segments of a channel with runs filter as one signal. The filter sees only
+the samples of each run. A pause of up to 100 samples carries the state across
+it, and a longer pause restarts the filter. A run that resumes less than one
+sample off its grid continues the previous run.
 
 A continuation is the one case where a segment does not start on a bin boundary. Reads
 snap outward to bin boundaries, so two windows meeting between samples both cover the
@@ -289,14 +308,18 @@ Returns a promise for the `[startUs, endUs)` spans where one continuous channel 
 clamped to the window. Takes `channel`, `startUs`, `endUs`, an optional `gapThresholdUs`,
 an optional `priority` (defaulting to `"background"`), and an optional `signal`.
 
-Spans come from the coarsest pyramid level, so their edges align to that level's bins,
-rounded outward to whole microseconds and kept inside the channel's `startUs` and
-`endUs`. A bin is populated when the level's `count` member is above zero, or, on
-a level without `count`, when its min/max is finite. In a 1.0 bundle the two agree: every
-statistic covers a bin's finite samples only, and a bin is NaN only when it recorded
-none. Gaps no wider than `gapThresholdUs` are bridged into one span. The default of 0
-splits on every gap. The edges of a pause are exact in [`runs()`](#runsoptions), not
-here.
+Spans come from the coarsest pyramid level, so their edges align to that level's
+bins, rounded outward to whole microseconds and kept inside the channel's
+`startUs` and `endUs`. A bin is populated when the level's `count` member is
+above zero, or, on a level without `count`, when its min/max is finite. In a 1.0
+bundle the two agree: every statistic covers a bin's finite samples only, and a
+bin is NaN only when it recorded none. Gaps no wider than `gapThresholdUs` are
+bridged into one span. The default of 0 splits on every gap.
+
+A channel without levels reads its raw samples instead. A sample is populated
+when it is finite, and a channel with runs places each sample at its exact time,
+so the edges of a pause are exact. On a level, the edges of a pause fall on bin
+boundaries, and [`runs()`](#runsoptions) gives them exactly.
 
 ## `runs(options)`
 
