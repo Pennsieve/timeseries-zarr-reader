@@ -114,6 +114,26 @@ function expectWithinTolerance(
   );
 }
 
+/**
+ * The time `sampleCount` samples after `startUs`, rounded up to a whole microsecond.
+ * Integer arithmetic keeps the quotient exact at epoch scale.
+ */
+function wholeMicrosecondEnd(
+  startUs: number,
+  sampleCount: number,
+  rateHz: number,
+): number {
+  let scaledRate = rateHz;
+  let scale = 1n;
+  while (!Number.isInteger(scaledRate)) {
+    scaledRate *= 2;
+    scale *= 2n;
+  }
+  const numerator = BigInt(sampleCount) * 1_000_000n * scale;
+  const denominator = BigInt(scaledRate);
+  return startUs + Number((numerator + denominator - 1n) / denominator);
+}
+
 describe("conformance fixtures", () => {
   const open = async (fixture: Fixture) =>
     new StreamingClient({ store: await openBundle(join(DIR, fixture.path)) });
@@ -140,11 +160,14 @@ describe("conformance fixtures", () => {
     if (info?.kind !== "continuous") throw new Error("unreachable");
     // A channel with runs ends where its last run does.
     const lastRun = channel.runs?.[channel.runs.length - 1];
-    expect(info.endUs).toBeCloseTo(
+    expect(info.endUs).toBe(
       lastRun === undefined
-        ? channel.offset_us + channel.num_samples * periodUs
-        : lastRun[2]! + lastRun[1]! * periodUs,
-      6,
+        ? wholeMicrosecondEnd(
+            channel.offset_us,
+            channel.num_samples,
+            channel.rate_hz,
+          )
+        : wholeMicrosecondEnd(lastRun[2]!, lastRun[1]!, channel.rate_hz),
     );
 
     // 1. Raw samples, read whole: one segment per run at the run's time. A sample
@@ -190,9 +213,8 @@ describe("conformance fixtures", () => {
       expect(runs).toHaveLength(channel.runs.length);
       channel.runs.forEach(([firstSample, sampleCount, startUs], row) => {
         expect(runs[row]).toMatchObject({ firstSample, sampleCount, startUs });
-        expect(runs[row]!.endUs).toBeCloseTo(
-          startUs! + sampleCount! * periodUs,
-          6,
+        expect(runs[row]!.endUs).toBe(
+          wholeMicrosecondEnd(startUs!, sampleCount!, channel.rate_hz),
         );
       });
     }
