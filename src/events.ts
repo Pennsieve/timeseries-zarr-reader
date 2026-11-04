@@ -127,15 +127,15 @@ export async function openEventTimes(
  * row.
  *
  * A row is read up to its first zero byte, so a row of zeros is an empty string.
- * Bytes that are not valid UTF-8 decode to U+FFFD rather than failing the read: one
- * bad annotation should not take the channel down with it.
+ * A leading U+FEFF stays in the string. Bytes that are not valid UTF-8 decode
+ * to U+FFFD instead of failing the read.
  */
 export function decodeText(
   rows: Uint8Array,
   width: number,
   count: number,
 ): string[] {
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const out: string[] = [];
   for (let row = 0; row < count; row++) {
     const start = row * width;

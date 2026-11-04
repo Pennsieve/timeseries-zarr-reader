@@ -199,6 +199,11 @@ describe("decodeText", () => {
     expect(decodeText(rows, 8, 1)).toEqual(["\u00b5V ok"]);
   });
 
+  test("keeps a leading byte order mark", () => {
+    const rows = Uint8Array.from(bytes("\ufeffnote", 8));
+    expect(decodeText(rows, 8, 1)).toEqual(["\ufeffnote"]);
+  });
+
   test("replaces invalid UTF-8 rather than throwing", () => {
     const rows = Uint8Array.from([0xff, 0x61, 0, 0]);
     expect(decodeText(rows, 4, 1)).toEqual(["\ufffda"]);
