@@ -406,6 +406,55 @@ describe("runs", () => {
       expect(range(3500, 3500)).toEqual({ start: 3, end: 3 });
     });
 
+    describe("at 30000 Hz from an epoch-scale offset", () => {
+      const rateHz = 30_000;
+      const length = 4000;
+      const offsetUs = EPOCH_US;
+      const earlyRuns = (startOffsetUs: number) => [
+        { firstSample: 0, sampleCount: 100, startUs: offsetUs },
+        {
+          firstSample: 200,
+          sampleCount: 3000,
+          startUs: offsetUs + startOffsetUs,
+        },
+      ];
+      const rangeOf = (
+        table: ReturnType<typeof earlyRuns>,
+        startOffsetUs: number,
+        endOffsetUs: number,
+      ) =>
+        runIndexRange(
+          { startUs: offsetUs + startOffsetUs, endUs: offsetUs + endOffsetUs },
+          table,
+          offsetUs,
+          rateHz,
+          length,
+        );
+
+      // Sample 200 is on the grid at 6666.67 us. This run starts it 20 us early.
+      const early = earlyRuns(6646);
+
+      test("starts a window at a run's first sample when the run starts before its grid time", () => {
+        expect(rangeOf(early, 6646, 6700)).toEqual({ start: 200, end: 202 });
+      });
+
+      test("starts a window after a run's exact end at the first sample past the run", () => {
+        // The run ends at 106_646 us, and sample 3200 is on the grid at 106_666.67 us.
+        // The window opens between the two, where the grid index is still 3199.
+        expect(rangeOf(early, 106_650, 107_000)).toEqual({
+          start: 3200,
+          end: 3210,
+        });
+      });
+
+      test("excludes a run that starts at the end of the window", () => {
+        // The run starts 1000 us before its first sample's grid time, so the grid index
+        // of its start is 170, short of its first sample.
+        const wide = earlyRuns(5666);
+        expect(rangeOf(wide, 5000, 5666)).toEqual({ start: 150, end: 170 });
+      });
+    });
+
     test("agrees with binIndexRange on a table of one run at the offset", () => {
       const offsetUs = EPOCH_US;
       const rateHz = 30_000;
