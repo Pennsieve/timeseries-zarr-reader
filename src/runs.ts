@@ -1,5 +1,6 @@
 import type { ContinuousEntry } from "./catalog.js";
 import type { Run, Store, StoreOptions } from "./types.js";
+import { binEdgeUs, binStartUs } from "./grid.js";
 import { readInt64Rows } from "./zarr.js";
 
 /**
@@ -19,7 +20,7 @@ export async function readRuns(
 ): Promise<Run[]> {
   const { info, sampleCount } = entry;
   const endOf = (startUs: number, count: number): number =>
-    startUs + (count * 1e6) / info.rateHz;
+    binEdgeUs(count, startUs, info.rateHz, 1, "ceil");
 
   if (entry.runs === undefined) {
     return sampleCount === 0
@@ -68,13 +69,19 @@ export async function readRuns(
           `overlaps the run before it, which ends at sample ${previousEnd}`,
         );
       }
-      if (startUs < previous.endUs) {
+      const previousEndUs = binStartUs(
+        previous.sampleCount,
+        previous.startUs,
+        info.rateHz,
+        1,
+      );
+      if (startUs < previousEndUs) {
         throw fail(
-          `starts before the run before it ends at ${previous.endUs} us`,
+          `starts before the run before it ends at ${previousEndUs} us`,
         );
       }
     }
-    const gridUs = info.startUs + (firstSample * 1e6) / info.rateHz;
+    const gridUs = binStartUs(firstSample, info.startUs, info.rateHz, 1);
     if (!(Math.abs(startUs - gridUs) < periodUs)) {
       throw fail(
         `starts ${startUs - gridUs} us from its grid sample; the bound is one sample period`,

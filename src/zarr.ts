@@ -99,7 +99,7 @@ function flattenRows<D extends NumericDtype>(
 /**
  * Reads a level's bins over a half-open index range.
  *
- * The range is used as given, with no clamping to the array's bounds. {@link binRange}
+ * The range is used as given, with no clamping to the array's bounds. {@link binIndexRange}
  * derives a clamped one. An empty range returns empty data. A rank-1 array yields raw
  * samples, a rank-2 `[n, 2]` array interleaved `[min, max, ...]` pairs. Stored float32
  * samples widen to `Float64Array`. `opts.signal` is forwarded to the store.

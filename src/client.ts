@@ -5,7 +5,15 @@ import type {
   EventEntry,
   LevelInfo,
 } from "./catalog.js";
-import { binRange, readCatalog, selectLevel } from "./catalog.js";
+import { readCatalog, selectLevel } from "./catalog.js";
+import {
+  binEdgeUs,
+  binIndexRange,
+  binStartUs,
+  countBinRange,
+  countBinStartUs,
+  wholeSamples,
+} from "./grid.js";
 import {
   MAX_CACHE_BYTES,
   MAX_CONCURRENT_REQUESTS,
@@ -527,12 +535,12 @@ export class StreamingClient {
     }
 
     const level = selectLevel(levels, params.pixelWidthUs);
-    const grid = {
-      startUs: level.offsetUs,
-      periodUs: level.periodUs,
-      binCount: level.binCount,
-    };
-    const range = binRange(grid, params.startUs, params.endUs);
+    const range = countBinRange(
+      params,
+      level.offsetUs,
+      level.periodUs,
+      level.binCount,
+    );
     const { data } = await this.#limit(params.priority ?? "viewport", () =>
       readRows(
         store,
@@ -545,7 +553,7 @@ export class StreamingClient {
     return {
       channel: params.channel,
       level: level.level,
-      startUs: grid.startUs + range.start * level.periodUs,
+      startUs: countBinStartUs(range.start, level.offsetUs, level.periodUs),
       periodUs: level.periodUs,
       labelCount: level.labelCount,
       counts: Uint32Array.from(data),
@@ -591,8 +599,9 @@ export class StreamingClient {
    * Reads the coarsest pyramid level. A bin is populated when its `count` is above zero,
    * or, on a level without `count`, when its min/max is finite. Consecutive populated
    * bins merge into one span, and gaps no wider than `gapThresholdUs` are bridged. Span
-   * edges align to that level's bin boundaries. Throws for an unknown channel id, an
-   * event channel, or an `endUs` before `startUs`.
+   * edges align to that level's bin boundaries, rounded outward to whole microseconds,
+   * and stay inside the channel's `startUs` and `endUs`. Throws for an unknown
+   * channel id, an event channel, or an `endUs` before `startUs`.
    */
   async dataSpans(
     params: DataSpanOptions,
@@ -611,27 +620,58 @@ export class StreamingClient {
     );
 
     const gapThresholdUs = params.gapThresholdUs ?? 0;
+    const { startUs: offsetUs, rateHz } = entry.info;
+    const lowUs = Math.max(params.startUs, entry.info.startUs);
+    const highUs = Math.min(params.endUs, entry.info.endUs);
     const spans: Array<[startUs: number, endUs: number]> = [];
 
+    // Each run of populated bins is one span: the floor of its first bin's start to
+    // the ceiling of its last bin's end, kept inside the window and the channel.
+    const addSpan = (firstBin: number, stopBin: number): void => {
+      const spanStartUs = Math.max(
+        lowUs,
+        binEdgeUs(
+          read.range.start + firstBin,
+          offsetUs,
+          rateHz,
+          level.samplesPerBin,
+          "floor",
+        ),
+      );
+      const spanEndUs = Math.min(
+        highUs,
+        binEdgeUs(
+          read.range.start + stopBin,
+          offsetUs,
+          rateHz,
+          level.samplesPerBin,
+          "ceil",
+        ),
+      );
+      if (spanStartUs >= spanEndUs) {
+        return;
+      }
+      const last = spans[spans.length - 1];
+      if (last !== undefined && spanStartUs - last[1] <= gapThresholdUs) {
+        last[1] = Math.max(last[1], spanEndUs);
+      } else {
+        spans.push([spanStartUs, spanEndUs]);
+      }
+    };
+
+    let runStart: number | undefined;
     for (let bin = 0; bin < populated.length; bin++) {
       if (populated[bin] === 0) {
-        continue;
-      }
-
-      const binStartUs = Math.max(
-        read.startUs + bin * level.periodUs,
-        params.startUs,
-      );
-      const binEndUs = Math.min(
-        read.startUs + (bin + 1) * level.periodUs,
-        params.endUs,
-      );
-      const last = spans[spans.length - 1];
-      if (last !== undefined && binStartUs - last[1] <= gapThresholdUs) {
-        last[1] = binEndUs;
+        if (runStart !== undefined) {
+          addSpan(runStart, bin);
+          runStart = undefined;
+        }
       } else {
-        spans.push([binStartUs, binEndUs]);
+        runStart ??= bin;
       }
+    }
+    if (runStart !== undefined) {
+      addSpan(runStart, populated.length);
     }
 
     return spans;
@@ -693,7 +733,7 @@ export class StreamingClient {
   #planMontage(
     catalog: BundleCatalog,
     pair: MontagePair,
-    window: { startUs: number; endUs: number },
+    params: { startUs: number; endUs: number },
   ): PlannedTrace {
     const lead = continuousEntry(catalog, pair.lead);
     const secondary = continuousEntry(catalog, pair.secondary);
@@ -704,40 +744,45 @@ export class StreamingClient {
       );
     }
 
-    // Subtraction pairs samples by index, so the channels must share a sample grid, with
-    // equal periods and starts a whole number of periods apart.
+    // Subtraction pairs samples by index, so the channels must share a sample grid:
+    // equal rates, and starts a whole number of samples apart.
     const leadRaw = rawLevel(lead);
     const secondaryRaw = rawLevel(secondary);
-    const offsetUs = lead.info.startUs - secondary.info.startUs;
-    if (
-      leadRaw.periodUs !== secondaryRaw.periodUs ||
-      offsetUs % leadRaw.periodUs !== 0
-    ) {
+    const shift = wholeSamples(
+      lead.info.startUs - secondary.info.startUs,
+      lead.info.rateHz,
+    );
+    if (shift === undefined) {
       throw new Error(
         `montage pair ${pair.lead}/${pair.secondary} cannot be aligned: ` +
-          `sample periods differ or the start offset is not a whole number of periods`,
+          `the start offset is not a whole number of samples`,
       );
     }
 
-    // Both reads must cover the same time range, even when one channel starts or ends
-    // inside the other's extent.
-    const sharedStartUs = Math.max(
-      window.startUs,
-      lead.info.startUs,
-      secondary.info.startUs,
+    // Lead sample `i` is secondary sample `i + shift`. Both reads must cover the same
+    // samples, even when one channel starts or ends inside the other's extent.
+    const window = planRead(lead, leadRaw, params).range;
+    const start = Math.max(window.start, -shift);
+    const end = Math.max(
+      Math.min(window.end, secondaryRaw.binCount - shift),
+      start,
     );
-    const sharedEndUs = Math.max(
-      Math.min(window.endUs, lead.info.endUs, secondary.info.endUs),
-      sharedStartUs,
-    );
-    const shared = { startUs: sharedStartUs, endUs: sharedEndUs };
+    const readOf = (
+      entry: ContinuousEntry,
+      level: LevelInfo,
+      first: number,
+    ): PlannedRead => ({
+      level,
+      range: { start: first, end: first + (end - start) },
+      startUs: binStartUs(first, entry.info.startUs, entry.info.rateHz, 1),
+    });
 
     return {
       channel: montageChannelKey(lead.info, secondary.info),
       rateHz: lead.info.rateHz,
       channelStartUs: lead.info.startUs,
-      read: planRead(lead, leadRaw, shared),
-      secondaryRead: planRead(secondary, secondaryRaw, shared),
+      read: readOf(lead, leadRaw, start),
+      secondaryRead: readOf(secondary, secondaryRaw, start + shift),
     };
   }
 
@@ -922,15 +967,17 @@ function planRead(
   level: LevelInfo,
   window: { startUs: number; endUs: number },
 ): PlannedRead {
-  const grid = {
-    startUs: entry.info.startUs,
-    periodUs: level.periodUs,
-    binCount: level.binCount,
-  };
-  const range = binRange(grid, window.startUs, window.endUs);
+  const { startUs: offsetUs, rateHz } = entry.info;
+  const range = binIndexRange(
+    window,
+    offsetUs,
+    rateHz,
+    level.samplesPerBin,
+    level.binCount,
+  );
   return {
     level,
     range,
-    startUs: grid.startUs + range.start * level.periodUs,
+    startUs: binStartUs(range.start, offsetUs, rateHz, level.samplesPerBin),
   };
 }

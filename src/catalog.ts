@@ -1,3 +1,4 @@
+import { channelEndUs, levelBins, samplesPerBin } from "./grid.js";
 import type {
   ContinuousChannelInfo,
   EventChannelInfo,
@@ -14,6 +15,8 @@ export interface LevelInfo {
   /** Absolute store path of the array a trace is read from: `raw`, or a level's `minmax`. */
   readonly path: `/${string}`;
   readonly periodUs: number;
+  /** Samples each bin folds: 1 for the raw samples, at least 2 for a level. */
+  readonly samplesPerBin: number;
   /** Number of bins along the time axis. */
   readonly binCount: number;
   /** True when each bin holds a `[min, max]` pair. */
@@ -151,43 +154,6 @@ export function selectLevel<T extends { periodUs: number }>(
   return coarsestThatFits ?? finest;
 }
 
-/**
- * Returns the half-open bin index range covering the window `[startUs, endUs)`.
- *
- * `start` is the first overlapped bin, and `end` is one past the last. Both are clamped
- * to `[0, grid.binCount]`. A bin that partially overlaps the window is included. A bin
- * starting exactly at the exclusive `endUs` is not.
- *
- * `grid.startUs` is the bundle time of bin 0.
- *
- * Throws a RangeError when `endUs` precedes `startUs` or `grid.periodUs` is not greater
- * than zero.
- */
-export function binRange(
-  grid: { startUs: number; periodUs: number; binCount: number },
-  startUs: number,
-  endUs: number,
-): { start: number; end: number } {
-  if (!(grid.periodUs > 0)) {
-    throw new RangeError(
-      `grid.periodUs must be greater than 0 (got ${grid.periodUs})`,
-    );
-  }
-  if (endUs < startUs) {
-    throw new RangeError(
-      `endUs must not precede startUs (got ${startUs} and ${endUs})`,
-    );
-  }
-
-  const clampToLevel = (bin: number): number =>
-    Math.min(Math.max(bin, 0), grid.binCount);
-
-  return {
-    start: clampToLevel(Math.floor((startUs - grid.startUs) / grid.periodUs)),
-    end: clampToLevel(Math.ceil((endUs - grid.startUs) / grid.periodUs)),
-  };
-}
-
 type Json = Record<string, unknown>;
 
 /** Narrows parsed JSON to an object. Returns undefined for non-objects, including null. */
@@ -215,6 +181,15 @@ function rank2(shape: unknown): [number, number] | undefined {
     ? [shape[0], shape[1]]
     : undefined;
 }
+
+/** Smallest width of a level in samples. */
+const MIN_SAMPLES_PER_BIN = 2;
+
+/** Exclusive upper bound on the width of a level in samples. */
+const MAX_SAMPLES_PER_BIN = 2 ** 32;
+
+/** Relative tolerance of a level's `period_us` against its width in samples. */
+const LEVEL_PERIOD_TOLERANCE = 1e-12;
 
 /** Level groups are named by positive integers. */
 const LEVEL_NAME = /^[1-9]\d*$/;
@@ -364,6 +339,7 @@ function readContinuous(
     {
       path: `/${index}/raw`,
       periodUs,
+      samplesPerBin: 1,
       binCount: sampleCount,
       isMinMax: false,
     },
@@ -384,38 +360,84 @@ function readContinuous(
   }
 
   // 3. One level per numbered group. `minmax` is what a trace reads; `count` says how
-  //    much of each bin was recorded. `mean` and `var` are not read. The factor
-  //    between levels is whatever their periods say; nothing assumes 4.
-  for (const [level, group] of nodes.levelGroups) {
+  //    much of each bin was recorded. `mean` and `var` are not read. A level's width
+  //    in samples follows from its `period_us`, and each level nests over the one
+  //    before it. The factor between levels is whatever their widths say; nothing
+  //    assumes 4.
+  const numbers = [...nodes.levelGroups.keys()].map(Number);
+  numbers.sort((a, b) => a - b);
+  if (numbers.some((number, position) => number !== position + 1)) {
+    throw new Error(
+      `${where}: levels must be numbered from 1 with no gap (got ${numbers.join(", ")})`,
+    );
+  }
+  if (sampleCount === 0 && numbers.length > 0) {
+    throw new Error(`${where} has no samples, so it must have no levels`);
+  }
+  let previousWidth = 0;
+  for (const number of numbers) {
+    const level = String(number);
+    const group = nodes.levelGroups.get(level)!;
     const levelWhere = `level /${index}/${level}`;
     const levelPeriodUs = tszReader(
       tszOf(group, levelWhere),
       levelWhere,
     ).positiveNumber("period_us");
+
+    const width = samplesPerBin(levelPeriodUs, rateHz);
+    const exactPeriodUs = (width * 1e6) / rateHz;
+    if (
+      width < MIN_SAMPLES_PER_BIN ||
+      width >= MAX_SAMPLES_PER_BIN ||
+      Math.abs(levelPeriodUs - exactPeriodUs) >
+        LEVEL_PERIOD_TOLERANCE * Math.abs(exactPeriodUs)
+    ) {
+      throw new Error(
+        `${levelWhere}: tsz.period_us must be a whole number of samples from ${MIN_SAMPLES_PER_BIN} to ${MAX_SAMPLES_PER_BIN - 1} at rate_hz ${rateHz}, within ${LEVEL_PERIOD_TOLERANCE} relative (got ${levelPeriodUs})`,
+      );
+    }
+    if (
+      previousWidth > 0 &&
+      (width % previousWidth !== 0 ||
+        width < MIN_SAMPLES_PER_BIN * previousWidth)
+    ) {
+      throw new Error(
+        `${levelWhere}: tsz.period_us must be a multiple of the level before it, at least ${MIN_SAMPLES_PER_BIN} times it (${width} samples after ${previousWidth})`,
+      );
+    }
+    previousWidth = width;
+
+    const binCount = levelBins(sampleCount, width);
     const members = nodes.members.get(level);
     const minmax = rank2(members?.get("minmax")?.shape);
     if (minmax === undefined || minmax[1] !== 2) {
       throw new Error(`${levelWhere} must have a minmax array of shape [n, 2]`);
     }
-    const [binCount] = minmax;
-    const count = members?.get("count");
-    if (count !== undefined && rank1Length(count.shape) !== binCount) {
+    if (minmax[0] !== binCount) {
       throw new Error(
-        `${levelWhere} has ${binCount} bins but count has shape ${JSON.stringify(count.shape)}`,
+        `${levelWhere} has ${binCount} bins but minmax has shape ${JSON.stringify(members?.get("minmax")?.shape)}`,
       );
+    }
+    for (const member of ["count", "mean", "var"]) {
+      const node = members?.get(member);
+      if (node !== undefined && rank1Length(node.shape) !== binCount) {
+        throw new Error(
+          `${levelWhere} has ${binCount} bins but ${member} has shape ${JSON.stringify(node.shape)}`,
+        );
+      }
     }
     const info: Mutable<LevelInfo> = {
       path: `/${index}/${level}/minmax`,
       periodUs: levelPeriodUs,
+      samplesPerBin: width,
       binCount,
       isMinMax: true,
     };
-    if (count !== undefined) {
+    if (members?.has("count")) {
       info.countPath = `/${index}/${level}/count`;
     }
     levels.push(info);
   }
-  levels.sort((a, b) => a.periodUs - b.periodUs);
 
   const info: Mutable<ContinuousChannelInfo> = {
     kind: "continuous",
@@ -425,7 +447,7 @@ function readContinuous(
     unit,
     rateHz,
     startUs: offsetUs,
-    endUs: offsetUs + sampleCount * periodUs,
+    endUs: channelEndUs(offsetUs, sampleCount, rateHz),
     runs: runs?.rows ?? (sampleCount > 0 ? 1 : 0),
   };
   if (provenance !== undefined) {

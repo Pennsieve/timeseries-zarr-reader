@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { binIndexRange } from "./grid.js";
 import { collect } from "./test-utils.js";
 import type { ChannelInfo, EventColumn, Segment } from "./index.js";
 import { openBundle, StreamingClient } from "./index.js";
@@ -101,67 +102,23 @@ const isGrid = (
  */
 const REASONS = {
   runs: "a raw read of a channel with runs delivers grid times and the pause samples",
-  binRange:
-    "a window bound on a bin edge maps to a different bin range in binary64",
-  startTime:
-    "the segment start is computed as offset + index * period, not in the spec's order",
-  spansEnd: "data spans end at the last bin edge, past the end of the channel",
 } as const;
 
 type Reason = keyof typeof REASONS;
 
-/** The bin range that binary64 division of the window bounds gives. */
-function floatRange(
-  window: GoldenGridWindow,
-  offsetUs: number,
-  bins: number,
-): { start: number; end: number } {
-  const clamp = (bin: number): number => Math.min(Math.max(bin, 0), bins);
-  return {
-    start: clamp(Math.floor((window.start_us - offsetUs) / window.period_us)),
-    end: clamp(Math.ceil((window.end_us - offsetUs) / window.period_us)),
-  };
-}
-
-/** The reason the reader fails a grid window, if it does. */
-function gridReason(
-  window: GoldenGridWindow,
-  offsetUs: number,
-  bins: number,
-): Reason | undefined {
-  const range = floatRange(window, offsetUs, bins);
-  if (range.start !== window.first || range.end !== window.first + window.len) {
-    return "binRange";
-  }
-  if (
-    window.len > 0 &&
-    offsetUs + window.first * window.period_us !== window.spec_start_us
-  ) {
-    return "startTime";
-  }
-  return undefined;
-}
-
 /**
- * The reason the reader fails a data-span window, if it does. The reader ends the last
- * span at the edge of the coarsest bin, which is past the channel's end when the last
- * bin is short.
+ * The reason the reader fails a data-span window, if it does. A channel with runs ends
+ * at the exact end of its last run, which the reader does not yet know.
  */
 function spansReason(
   channel: GoldenContinuous,
   window: GoldenSpans,
 ): Reason | undefined {
-  const coarsest = channel.levels[channel.levels.length - 1];
-  const binsEndUs =
-    channel.offset_us +
-    (coarsest === undefined
-      ? channel.num_samples * (1e6 / channel.rate_hz)
-      : coarsest.bins * coarsest.period_us);
   const lastEndUs = window.spans[window.spans.length - 1]?.[1];
-  return lastEndUs === channel.end_us &&
-    window.end_us > channel.end_us &&
-    binsEndUs > channel.end_us
-    ? "spansEnd"
+  return channel.runs !== null &&
+    window.end_us >= channel.end_us &&
+    lastEndUs === channel.end_us
+    ? "runs"
     : undefined;
 }
 
@@ -169,7 +126,18 @@ function continuousReason(
   channel: GoldenContinuous,
   window: GoldenGridWindow,
 ): Reason | undefined {
-  if (window.level === 0 && channel.runs !== null && window.len > 0) {
+  if (window.level === 0 && channel.runs !== null && window.len === 0) {
+    // The reader reads the grid samples inside a pause, which Python skips.
+    const grid = binIndexRange(
+      { startUs: window.start_us, endUs: window.end_us },
+      channel.offset_us,
+      channel.rate_hz,
+      1,
+      channel.num_samples,
+    );
+    return grid.end > grid.start ? "runs" : undefined;
+  }
+  if (window.level === 0 && channel.runs !== null) {
     const [only, ...more] = runSegments(channel, window);
     if (
       more.length > 0 ||
@@ -179,11 +147,7 @@ function continuousReason(
       return "runs";
     }
   }
-  const bins =
-    window.level === 0
-      ? channel.num_samples
-      : channel.levels.find((level) => level.level === window.level)!.bins;
-  return gridReason(window, channel.offset_us, bins);
+  return undefined;
 }
 
 const clients = new Map<string, Promise<StreamingClient>>();
@@ -423,15 +387,9 @@ describe("parity with the Python reader", () => {
         }
       } else {
         for (const window of channel.cases) {
-          const level = isGrid(window)
-            ? channel.count_levels.find((entry) => entry.level === window.level)
-            : undefined;
           runners.push({
             title: `reads ${prefix} window ${window.id}`,
-            reason:
-              isGrid(window) && level !== undefined
-                ? gridReason(window, level.offset_us, level.bins)
-                : undefined,
+            reason: undefined,
             run: async () => {
               const client = await open();
               if (isGrid(window)) {
