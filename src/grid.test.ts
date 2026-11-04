@@ -6,7 +6,10 @@ import {
   channelEndUs,
   countBinRange,
   countBinStartUs,
+  entryEdgeUs,
+  entryTimeUs,
   levelBins,
+  runIndexRange,
   samplesPerBin,
   wholeSamples,
 } from "./grid.js";
@@ -350,5 +353,144 @@ describe("count levels", () => {
   test("starts a bin at the offset plus whole periods", () => {
     expect(countBinStartUs(0, 1000, 4000)).toBe(1000);
     expect(countBinStartUs(3, 1000, 4000)).toBe(13_000);
+  });
+});
+
+describe("runs", () => {
+  // 1 kHz from 0: grid sample 15 is at 15_000 us, and the second run resumes 400 us
+  // after it.
+  const runs = [
+    { firstSample: 0, sampleCount: 10, startUs: 0 },
+    { firstSample: 15, sampleCount: 10, startUs: 15_400 },
+  ];
+  const range = (startUs: number, endUs: number) =>
+    runIndexRange({ startUs, endUs }, runs, 0, 1000, 25);
+
+  describe("runIndexRange", () => {
+    test("covers every sample for a window around the channel", () => {
+      expect(range(0, 26_000)).toEqual({ start: 0, end: 25 });
+      expect(range(-Infinity, Infinity)).toEqual({ start: 0, end: 25 });
+    });
+
+    test("finds the samples a window cuts inside one run", () => {
+      expect(range(2500, 4500)).toEqual({ start: 2, end: 5 });
+      expect(range(3000, 4000)).toEqual({ start: 3, end: 4 });
+    });
+
+    test("places a window in the second run by the run's exact times", () => {
+      // Sample 15 spans [15_400, 16_400) and sample 16 starts at 16_400.
+      expect(range(15_500, 17_000)).toEqual({ start: 15, end: 17 });
+      expect(range(16_399, 16_401)).toEqual({ start: 15, end: 17 });
+      expect(range(16_400, 16_401)).toEqual({ start: 16, end: 17 });
+    });
+
+    test("excludes the sample that starts at the end of the window", () => {
+      expect(range(15_000, 15_400)).toEqual({ start: 15, end: 15 });
+      expect(range(15_000, 15_401)).toEqual({ start: 15, end: 16 });
+      expect(range(0, 5000)).toEqual({ start: 0, end: 5 });
+    });
+
+    test("places a window inside the pause on the grid", () => {
+      expect(range(11_000, 14_000)).toEqual({ start: 11, end: 14 });
+      expect(range(10_000, 15_400)).toEqual({ start: 10, end: 15 });
+    });
+
+    test("returns an empty range for a window outside the channel", () => {
+      expect(range(-1_000_000, 0)).toEqual({ start: 0, end: 0 });
+      expect(range(30_000, 40_000)).toEqual({ start: 25, end: 25 });
+      expect(range(Infinity, Infinity)).toEqual({ start: 25, end: 25 });
+      expect(range(-Infinity, -Infinity)).toEqual({ start: 0, end: 0 });
+    });
+
+    test("returns an empty range for a window of zero width", () => {
+      expect(range(3500, 3500)).toEqual({ start: 3, end: 3 });
+    });
+
+    test("agrees with binIndexRange on a table of one run at the offset", () => {
+      const offsetUs = EPOCH_US;
+      const rateHz = 30_000;
+      const length = 3000;
+      const table = [
+        { firstSample: 0, sampleCount: length, startUs: offsetUs },
+      ];
+      const edge = (index: number): number =>
+        binEdgeUs(index, offsetUs, rateHz, 1, "floor");
+      for (const [startUs, endUs] of [
+        [offsetUs, offsetUs + 100_000],
+        [edge(1500) - 1, edge(1500) + 1],
+        [edge(1500), edge(1500) + 134],
+        [edge(2999), edge(3000) + 500],
+        [offsetUs - 500, offsetUs + 40],
+        [offsetUs + 99_999, offsetUs + 100_000],
+      ] as const) {
+        const window = { startUs, endUs };
+        expect(runIndexRange(window, table, offsetUs, rateHz, length)).toEqual(
+          binIndexRange(window, offsetUs, rateHz, 1, length),
+        );
+      }
+    });
+
+    test("rejects a window that ends before it starts or holds NaN", () => {
+      expect(() => range(5, 4)).toThrow(RangeError);
+      expect(() => range(NaN, 4)).toThrow(RangeError);
+      expect(() => range(4, NaN)).toThrow(RangeError);
+    });
+
+    test("rejects a rate that is not positive and finite", () => {
+      const window = { startUs: 0, endUs: 1 };
+      expect(() => runIndexRange(window, runs, 0, 0, 25)).toThrow(RangeError);
+    });
+  });
+
+  describe("entryTimeUs", () => {
+    test("gives a sample inside a run its exact time", () => {
+      expect(entryTimeUs(3, 0, 1000, runs)).toBe(3000);
+      expect(entryTimeUs(15, 0, 1000, runs)).toBe(15_400);
+      expect(entryTimeUs(17, 0, 1000, runs)).toBe(17_400);
+    });
+
+    test("gives a sample between runs its grid time", () => {
+      expect(entryTimeUs(12, 0, 1000, runs)).toBe(12_000);
+    });
+
+    test("gives a sample past the last run its grid time", () => {
+      expect(entryTimeUs(26, 0, 1000, runs)).toBe(26_000);
+    });
+
+    test("uses the grid for a channel without a table", () => {
+      expect(entryTimeUs(17, 5, 1000)).toBe(17_005);
+      expect(entryTimeUs(1, EPOCH_US, 30_000)).toBe(
+        binStartUs(1, EPOCH_US, 30_000, 1),
+      );
+    });
+
+    test("evaluates a run's offset in the order of the specification", () => {
+      const run = [{ firstSample: 0, sampleCount: 100, startUs: EPOCH_US }];
+      expect(entryTimeUs(7, EPOCH_US, 30_000, run)).toBe(
+        EPOCH_US + (7 * 1e6) / 30_000,
+      );
+    });
+  });
+
+  describe("entryEdgeUs", () => {
+    test("rounds a start down and an end up from the exact time", () => {
+      const run = [{ firstSample: 0, sampleCount: 100, startUs: 0 }];
+      expect(entryEdgeUs(1, 0, 30_000, run, "start")).toBe(33);
+      expect(entryEdgeUs(1, 0, 30_000, run, "end")).toBe(67);
+    });
+
+    test("places a sample inside a run by the run's time", () => {
+      expect(entryEdgeUs(15, 0, 1000, runs, "start")).toBe(15_400);
+      expect(entryEdgeUs(15, 0, 1000, runs, "end")).toBe(16_400);
+    });
+
+    test("places a sample between runs on the grid", () => {
+      expect(entryEdgeUs(12, 0, 1000, runs, "start")).toBe(12_000);
+      expect(entryEdgeUs(12, 0, 1000, runs, "end")).toBe(13_000);
+    });
+
+    test("uses the grid for a channel without a table", () => {
+      expect(entryEdgeUs(3, 100, 1000, undefined, "end")).toBe(4100);
+    });
   });
 });

@@ -118,14 +118,22 @@ describe("conformance fixtures", () => {
       runs: channel.runs?.length ?? (channel.num_samples > 0 ? 1 : 0),
     });
     if (info?.kind !== "continuous") throw new Error("unreachable");
+    // A channel with runs ends where its last run does.
+    const lastRun = channel.runs?.[channel.runs.length - 1];
     expect(info.endUs).toBeCloseTo(
-      channel.offset_us + channel.num_samples * periodUs,
+      lastRun === undefined
+        ? channel.offset_us + channel.num_samples * periodUs
+        : lastRun[2]! + lastRun[1]! * periodUs,
       6,
     );
 
-    // 1. Raw samples, read whole.
+    // 1. Raw samples, read whole: one segment per run at the run's time. A sample
+    // between runs is not delivered.
     if (channel.num_samples > 0) {
-      const [segment] = await collect(
+      const table = channel.runs ?? [
+        [0, channel.num_samples, channel.offset_us],
+      ];
+      const segments = await collect(
         client.query({
           channels: [info.id],
           startUs: info.startUs,
@@ -134,9 +142,23 @@ describe("conformance fixtures", () => {
           raw: true,
         }),
       );
-      expect(segment?.data.length).toBe(channel.num_samples);
+      expect(segments.map((segment) => segment.startUs)).toEqual(
+        table.map((run) => run[2]),
+      );
+      expect(segments.map((segment) => segment.data.length)).toEqual(
+        table.map((run) => run[1]),
+      );
       for (const { index, value } of channel.samples) {
-        expect(segment!.data[index]).toBe(number(value));
+        const row = table.findIndex(
+          ([first, count]) => index >= first! && index < first! + count!,
+        );
+        if (row < 0) {
+          expect(value).toBeNull();
+        } else {
+          expect(segments[row]!.data[index - table[row]![0]!]).toBe(
+            number(value),
+          );
+        }
       }
     }
 

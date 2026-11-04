@@ -3,15 +3,12 @@
  * checks each result against what the Python reader returned for the same window.
  *
  * `scripts/generate-parity-golden.py` regenerates the golden file from
- * `timeseries-zarr-py`. A window that the reader does not yet match falls under one of
- * `REASONS` and runs with `test.fails`, so fixing the reader turns the case red until it
- * leaves its group.
+ * `timeseries-zarr-py`.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { binIndexRange } from "./grid.js";
 import { collect } from "./test-utils.js";
 import type { ChannelInfo, EventColumn, Segment } from "./index.js";
 import { openBundle, StreamingClient } from "./index.js";
@@ -95,61 +92,6 @@ const isGrid = (
   window: GoldenWindow | GoldenGridWindow,
 ): window is GoldenGridWindow => "first" in window;
 
-/**
- * Why a window does not match yet. Each reason has a predicate over the golden window
- * that selects the cases the reader fails for it. Those cases run with `test.fails`, so
- * a fix turns the group red and the reason leaves the list.
- */
-const REASONS = {
-  runs: "a raw read of a channel with runs delivers grid times and the pause samples",
-} as const;
-
-type Reason = keyof typeof REASONS;
-
-/**
- * The reason the reader fails a data-span window, if it does. A channel with runs ends
- * at the exact end of its last run, which the reader does not yet know.
- */
-function spansReason(
-  channel: GoldenContinuous,
-  window: GoldenSpans,
-): Reason | undefined {
-  const lastEndUs = window.spans[window.spans.length - 1]?.[1];
-  return channel.runs !== null &&
-    window.end_us >= channel.end_us &&
-    lastEndUs === channel.end_us
-    ? "runs"
-    : undefined;
-}
-
-function continuousReason(
-  channel: GoldenContinuous,
-  window: GoldenGridWindow,
-): Reason | undefined {
-  if (window.level === 0 && channel.runs !== null && window.len === 0) {
-    // The reader reads the grid samples inside a pause, which Python skips.
-    const grid = binIndexRange(
-      { startUs: window.start_us, endUs: window.end_us },
-      channel.offset_us,
-      channel.rate_hz,
-      1,
-      channel.num_samples,
-    );
-    return grid.end > grid.start ? "runs" : undefined;
-  }
-  if (window.level === 0 && channel.runs !== null) {
-    const [only, ...more] = runSegments(channel, window);
-    if (
-      more.length > 0 ||
-      only?.startUs !== window.spec_start_us ||
-      only.length !== window.len
-    ) {
-      return "runs";
-    }
-  }
-  return undefined;
-}
-
 const clients = new Map<string, Promise<StreamingClient>>();
 
 function clientFor(name: string, path: string): Promise<StreamingClient> {
@@ -181,16 +123,18 @@ function recorded(window: GoldenWindow, column: string, at: number): unknown {
 }
 
 /**
- * Compares every recorded row of `column` with `actual(at)`, bit for bit, and returns a
- * description of the first difference, or an empty string.
+ * Compares every recorded row of `column` from `from` up to `to` with `actual(at)`, bit
+ * for bit, and returns a description of the first difference, or an empty string.
  */
 function firstDifference(
   window: GoldenWindow,
   column: string,
   actual: (at: number) => unknown,
   decode: (value: unknown) => unknown = number,
+  from = 0,
+  to = window.len,
 ): string {
-  for (let at = 0; at < window.len; at++) {
+  for (let at = from; at < to; at++) {
     const value = recorded(window, column, at);
     if (value === undefined) {
       continue;
@@ -207,7 +151,11 @@ function firstDifference(
 const nonEmpty = (segments: Segment[]): Segment[] =>
   segments.filter((segment) => segment.data.length > 0);
 
-/** The segments a raw read of a channel with runs delivers: one per run it overlaps. */
+/**
+ * The segments a raw read of a channel with runs delivers: one per run it overlaps. A
+ * start time is the Python time axis where the golden file records it, and the time of
+ * the specification otherwise.
+ */
 function runSegments(
   channel: GoldenContinuous,
   window: GoldenGridWindow,
@@ -218,8 +166,12 @@ function runSegments(
     const low = Math.max(window.first, first);
     const high = Math.min(stop, first + count);
     if (high > low) {
+      const python = recorded(window, "time_us", low - window.first);
       segments.push({
-        startUs: timeUs + ((low - first) * 1e6) / channel.rate_hz,
+        startUs:
+          python === undefined
+            ? timeUs + ((low - first) * 1e6) / channel.rate_hz
+            : number(python),
         length: high - low,
         from: low - window.first,
       });
@@ -261,13 +213,16 @@ async function checkContinuous(
   const columns = raw ? ["values"] : ["min", "max"];
   segments.forEach((segment, row) => {
     expect(segment.isMinMax).toBe(!raw);
-    const { from } = expected[row]!;
+    const { from, length } = expected[row]!;
     columns.forEach((column, offset) => {
       expect(
         firstDifference(
           window,
           column,
           (at) => segment.data[(at - from) * width + offset],
+          number,
+          from,
+          from + length,
         ),
       ).toBe("");
     });
@@ -349,78 +304,46 @@ async function checkEvents(
 }
 
 describe("parity with the Python reader", () => {
-  interface Runner {
-    title: string;
-    reason: Reason | undefined;
-    run: () => Promise<void>;
-  }
-  const runners: Runner[] = [];
-
   for (const [name, bundle] of Object.entries(golden.bundles)) {
     for (const channel of bundle.channels) {
       const prefix = `${name}/${channel.id}`;
       const open = () => clientFor(name, bundle.path);
       if (channel.kind === "continuous") {
         for (const window of channel.cases) {
-          runners.push({
-            title: `reads ${prefix} window ${window.id}`,
-            reason: continuousReason(channel, window),
-            run: async () => checkContinuous(await open(), channel, window),
+          test(`reads ${prefix} window ${window.id}`, async () => {
+            await checkContinuous(await open(), channel, window);
           });
         }
         for (const spans of channel.spans) {
-          runners.push({
-            title: `reads ${prefix} data spans ${spans.id}`,
-            reason: spansReason(channel, spans),
-            run: async () => {
-              const client = await open();
-              expect(
-                await client.dataSpans({
-                  channel: channel.id,
-                  startUs: spans.start_us,
-                  endUs: spans.end_us,
-                  gapThresholdUs: spans.gap_us,
-                }),
-              ).toEqual(spans.spans);
-            },
+          test(`reads ${prefix} data spans ${spans.id}`, async () => {
+            const client = await open();
+            expect(
+              await client.dataSpans({
+                channel: channel.id,
+                startUs: spans.start_us,
+                endUs: spans.end_us,
+                gapThresholdUs: spans.gap_us,
+              }),
+            ).toEqual(spans.spans);
           });
         }
       } else {
         for (const window of channel.cases) {
-          runners.push({
-            title: `reads ${prefix} window ${window.id}`,
-            reason: undefined,
-            run: async () => {
-              const client = await open();
-              if (isGrid(window)) {
-                await checkCounts(client, channel, window);
-              } else {
-                await checkEvents(
-                  client,
-                  await client.channelInfo(),
-                  channel,
-                  window,
-                );
-              }
-            },
+          test(`reads ${prefix} window ${window.id}`, async () => {
+            const client = await open();
+            if (isGrid(window)) {
+              await checkCounts(client, channel, window);
+            } else {
+              await checkEvents(
+                client,
+                await client.channelInfo(),
+                channel,
+                window,
+              );
+            }
           });
         }
       }
     }
-  }
-
-  for (const { title, reason, run } of runners) {
-    if (reason === undefined) {
-      test(title, run);
-    }
-  }
-  for (const [reason, description] of Object.entries(REASONS)) {
-    describe(`known failure: ${description}`, () => {
-      for (const runner of runners) {
-        if (runner.reason === reason) {
-          test.fails(runner.title, runner.run);
-        }
-      }
-    });
   }
 });

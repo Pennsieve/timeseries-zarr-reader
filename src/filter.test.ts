@@ -239,6 +239,68 @@ test("clears state after a gap beyond the reset threshold", () => {
   expectSamplesClose(out.data, createFilter(LOWPASS, RATE_HZ).process(second));
 });
 
+test("carries state across a resume less than one period off the grid", () => {
+  const { signal, first, second, secondStartUs } = split();
+  const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
+
+  // The resume time differs from the grid time by less than one sample period.
+  for (const lateUs of [0.4 * PERIOD_US, 0.6 * PERIOD_US, -0.4 * PERIOD_US]) {
+    const session = createFilterSession();
+    session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+    const out = session.apply(
+      segment("c", secondStartUs + lateUs, second),
+      LOWPASS,
+      RATE_HZ,
+    );
+
+    expect(out.startUs).toBe(secondStartUs + lateUs);
+    expectSamplesClose(out.data, whole.slice(first.length));
+  }
+});
+
+test("carries state across a resume off the grid at a rate with a fractional period", () => {
+  // 512 Hz from an epoch start: the period is 1953.125 us, so times carry rounding.
+  const rateHz = 512;
+  const periodUs = 1e6 / rateHz;
+  const startUs = 1_790_000_000_000_000;
+  const signal = sine(20, 400);
+  const whole = createFilter(LOWPASS, rateHz).process(signal);
+
+  const session = createFilterSession();
+  session.apply(
+    segment("c", startUs, signal.subarray(0, 200), periodUs),
+    LOWPASS,
+    rateHz,
+  );
+  const out = session.apply(
+    segment(
+      "c",
+      startUs + 200 * periodUs + 700,
+      signal.subarray(200),
+      periodUs,
+    ),
+    LOWPASS,
+    rateHz,
+  );
+
+  expectSamplesClose(out.data, whole.slice(200));
+});
+
+test("clears state after a pause of many samples that resumes off the grid", () => {
+  const { first, second, secondStartUs } = split();
+  const pauseUs = (FILTER_GAP_RESET_SAMPLES + 50) * PERIOD_US + 400;
+
+  const session = createFilterSession();
+  session.apply(segment("c", 0, first), LOWPASS, RATE_HZ);
+  const out = session.apply(
+    segment("c", secondStartUs + pauseUs, second),
+    LOWPASS,
+    RATE_HZ,
+  );
+
+  expectSamplesClose(out.data, createFilter(LOWPASS, RATE_HZ).process(second));
+});
+
 test("drops a first sample that repeats the previous segment's last", () => {
   const { signal, first, second, secondStartUs } = split();
   const whole = createFilter(LOWPASS, RATE_HZ).process(signal);
