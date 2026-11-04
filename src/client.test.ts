@@ -92,10 +92,13 @@ function withHeldKeys(
 }
 
 /**
- * Wraps a store so the read of the root `zarr.json` waits for `release`, standing
- * in for a slow catalog load.
+ * Wraps a store so reads of `key` wait for `release`, standing in for a slow
+ * transport.
  */
-function withGatedRoot(store: Store): { store: Store; release: () => void } {
+function withGatedKey(
+  store: Store,
+  key: `/${string}`,
+): { store: Store; release: () => void } {
   let release = (): void => {};
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -103,13 +106,13 @@ function withGatedRoot(store: Store): { store: Store; release: () => void } {
   return {
     release,
     store: {
-      get: async (key, opts) => {
-        if (key === "/zarr.json") {
+      get: async (path, opts) => {
+        if (path === key) {
           await gate;
         }
-        return store.get(key, opts);
+        return store.get(path, opts);
       },
-      getRange: (key, range, opts) => store.getRange(key, range, opts),
+      getRange: (path, range, opts) => store.getRange(path, range, opts),
     },
   };
 }
@@ -655,7 +658,10 @@ describe("query", () => {
   });
 
   test("rejects a query aborted while the catalog loads", async () => {
-    const gated = withGatedRoot(createMemoryStore(bundleFiles(CHANNELS)));
+    const gated = withGatedKey(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      "/zarr.json",
+    );
     const counting = createCountingStore(gated.store);
     const client = new StreamingClient({ store: counting.store });
     const controller = new AbortController();
@@ -1272,7 +1278,10 @@ describe("queryEvents", () => {
   });
 
   test("rejects a query aborted while the catalog loads", async () => {
-    const gated = withGatedRoot(createMemoryStore(bundleFiles(CHANNELS)));
+    const gated = withGatedKey(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      "/zarr.json",
+    );
     const client = new StreamingClient({ store: gated.store });
     const controller = new AbortController();
 
@@ -1323,6 +1332,35 @@ describe("queryEvents reads", () => {
 
     expect(counting.total()).toBe(afterFirst);
     expect(second.times).toEqual(first.times);
+  });
+
+  test("rejects a query aborted while it waits for a read slot", async () => {
+    const gated = withGatedKey(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      "/10/durations/c/0",
+    );
+    const client = new StreamingClient({
+      store: gated.store,
+      maxInflightFetches: 1,
+    });
+    // Holds the one slot on a read that waits, and puts the times of "u" in memory.
+    await collect(client.queryEvents({ ...UNITS, columns: [] }));
+    const holder = collect(client.queryEvents({ channels: ["k"], ...FULL }));
+    const controller = new AbortController();
+
+    const waiting = collect(
+      client.queryEvents({
+        ...UNITS,
+        columns: [],
+        signal: controller.signal,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort(new Error("stop"));
+    gated.release();
+
+    await expect(waiting).rejects.toThrow(/stop/);
+    await holder;
   });
 
   test("shares one read of the times between concurrent queries", async () => {

@@ -601,6 +601,8 @@ export class StreamingClient {
       this.#limit(priority, async (): Promise<SettledWindow> => {
         try {
           const times = await this.#eventTimesOf(store, entry);
+          // Times held in memory leave no store read to reject after an abort.
+          opts.signal?.throwIfAborted();
           const window = await queryEventChannel(
             store,
             id,
