@@ -1050,11 +1050,11 @@ function requirePixelWidth(pixelWidthUs: number): void {
   }
 }
 
-/** Throws a RangeError for a window that ends before it starts. */
+/** Throws a RangeError for a reversed window or a NaN bound. */
 function requireWindow(startUs: number, endUs: number): void {
-  if (endUs < startUs) {
+  if (!(endUs >= startUs)) {
     throw new RangeError(
-      `endUs must not precede startUs (got ${startUs} and ${endUs})`,
+      `endUs must not precede startUs, and neither may be NaN (got ${startUs} and ${endUs})`,
     );
   }
 }

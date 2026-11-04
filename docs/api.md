@@ -251,10 +251,10 @@ A montage trace and a read of a pyramid level stay on the channel's grid,
 sample period from its exact time. [`runs()`](#runsoptions) gives the exact
 times.
 
-`query()` is an async generator. Validation happens on the first iteration, not on the
-call, so wrap the `for await` loop in `try`/`catch` rather than the call itself. A
-non-positive `pixelWidthUs`, a window with `endUs < startUs`, and an already-aborted
-`signal` all reject there.
+`query()` is an async generator. Validation happens on the first iteration, not
+on the call, so wrap the `for await` loop in `try`/`catch` rather than the call
+itself. A non-positive `pixelWidthUs`, a window with `endUs < startUs` or a NaN
+bound, and an already-aborted `signal` all reject there.
 
 ### Filter state
 
