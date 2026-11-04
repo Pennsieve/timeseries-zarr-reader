@@ -1,6 +1,6 @@
 """Generate test-data/sample.zarr, the committed acceptance-test bundle.
 
-Runs the writer from a timeseries-zarr-py checkout, so the fixture has the full
+Runs the published `timeseries-zarr` writer, so the fixture has the full
 production layout: TS-Zarr 1.0 attributes under `tsz`, ZEP2 sharding, Zstd compression,
 crc32c shard indices, consolidated metadata, and a recording.json. The content is
 deterministic; the acceptance tests in src/client.test.ts and src/stores/parity.test.ts
@@ -31,30 +31,19 @@ min_bins is lowered to 256 so a 30 k-sample channel produces three pyramid level
 fits in one inner chunk. The "noise" channel depends on numpy's seeded RNG;
 everything else is exact arithmetic.
 
-Usage: <timeseries-zarr-py venv python> scripts/generate-test-bundle.py
-       (set TIMESERIES_ZARR_PY to the writer checkout; defaults to ../timeseries-zarr-py)
+Usage: python scripts/generate-test-bundle.py
+       (in an environment that has installed scripts/requirements.txt)
 """
 
-import os
 import shutil
-import sys
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(
-    0,
-    os.environ.get(
-        "TIMESERIES_ZARR_PY",
-        str(Path(__file__).resolve().parents[2] / "timeseries-zarr-py"),
-    ),
-)
-
-from timeseries_zarr.bundle import write_bundle  # noqa: E402
-from timeseries_zarr.runs import Run  # noqa: E402
-from timeseries_zarr.types import RecordingMeta, WriteOpts  # noqa: E402
+from timeseries_zarr.bundle import write_bundle
+from timeseries_zarr.runs import Run
+from timeseries_zarr.types import RecordingMeta, WriteOpts
 
 SESSION_START = datetime(2024, 1, 1, tzinfo=UTC)
 START_US = 1_704_067_200_000_000  # SESSION_START in microseconds since the epoch

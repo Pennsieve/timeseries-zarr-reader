@@ -61,7 +61,7 @@ id can match another channel's index.
 The format does not require ids to be unique, and the reader opens a bundle
 where channels share one. `channelInfo()` lists every such channel. A query that
 names a shared id rejects with an error that lists the channel indices, and a
-query that names an unknown id rejects too. `timeseries-zarr-py` writes an id on
+query that names an unknown id rejects too. `timeseries-zarr` writes an id on
 every channel and refuses duplicates.
 
 ## `recording()`

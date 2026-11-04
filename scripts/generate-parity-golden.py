@@ -1,7 +1,7 @@
 """Generate test-data/parity.json, the golden windows of the parity test.
 
 Opens test-data/sample.zarr and every valid bundle in test-data/conformance/
-with the Python reader from a timeseries-zarr-py checkout, runs a fixed list of
+with the published `timeseries-zarr` reader, runs a fixed list of
 windows through it, and records what the Python reader returns. The window
 list is deterministic. Random windows come from numpy's default_rng with a
 fixed seed per channel and level.
@@ -9,20 +9,19 @@ fixed seed per channel and level.
 Each case records `first`, `len`, `period_us`, `time_us0` (the first time of
 the Python time axis), and `spec_start_us`, which is the start time in the
 evaluation order of the spec: `offset_us + ((s * first) * 1e6) / rate_hz` for a
-grid entry that folds `s` samples. The two differ at the ulp for some rates.
-The script prints each difference it finds on a grid without runs.
+grid entry that folds `s` samples. On a grid without runs the two agree, and
+the script prints each difference it finds.
 
 A window of more than ROW_LIMIT entries records its first and last ROW_LIMIT / 2
 rows under `rows` and `tail`. Missing values (NaN) are null.
 
-Usage: <timeseries-zarr-py venv python> scripts/generate-parity-golden.py [out]
-       (set TIMESERIES_ZARR_PY to the checkout; defaults to
-       ../timeseries-zarr-py; out defaults to test-data/parity.json)
+Usage: python scripts/generate-parity-golden.py [out]
+       (in an environment that has installed scripts/requirements.txt;
+       out defaults to test-data/parity.json)
 """
 
 import json
 import math
-import os
 import sys
 import warnings
 from collections.abc import Sequence
@@ -31,16 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-sys.path.insert(
-    0,
-    os.environ.get(
-        "TIMESERIES_ZARR_PY",
-        str(Path(__file__).resolve().parents[2] / "timeseries-zarr-py"),
-    ),
-)
-
-import timeseries_zarr  # noqa: E402
+import timeseries_zarr
 
 REPO = Path(__file__).resolve().parents[1]
 DATA = REPO / "test-data"
