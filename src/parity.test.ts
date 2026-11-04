@@ -15,8 +15,11 @@ import { openBundle, StreamingClient } from "./index.js";
 
 const DATA = fileURLToPath(new URL("../test-data", import.meta.url));
 
-/** Columns of a recorded window. A null number stands for NaN. */
-type Columns = Record<string, unknown[]>;
+/** A recorded value. A null number stands for NaN. */
+type Cell = number | string | number[] | null;
+
+/** Columns of a recorded window. */
+type Columns = Record<string, Cell[]>;
 
 interface GoldenWindow {
   id: string;
@@ -85,8 +88,23 @@ const golden = JSON.parse(
 ) as Golden;
 
 /** A recorded number, where null stands for NaN. */
-const number = (value: unknown): number =>
-  value === null ? NaN : (value as number);
+function number(value: Cell): number {
+  if (value === null) {
+    return NaN;
+  }
+  if (typeof value !== "number") {
+    throw new TypeError(`expected a recorded number, got ${String(value)}`);
+  }
+  return value;
+}
+
+/** A recorded list of numbers. */
+function numbers(value: Cell): number[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`expected a recorded list, got ${String(value)}`);
+  }
+  return value;
+}
 
 const isGrid = (
   window: GoldenWindow | GoldenGridWindow,
@@ -109,7 +127,11 @@ function clientFor(name: string, path: string): Promise<StreamingClient> {
  * Recorded value at window index `at` of a column, or undefined where the golden file
  * keeps no row: a long window records only its first and last rows.
  */
-function recorded(window: GoldenWindow, column: string, at: number): unknown {
+function recorded(
+  window: GoldenWindow,
+  column: string,
+  at: number,
+): Cell | undefined {
   const head = window.rows[column];
   if (head === undefined) {
     return undefined;
@@ -130,7 +152,7 @@ function firstDifference(
   window: GoldenWindow,
   column: string,
   actual: (at: number) => unknown,
-  decode: (value: unknown) => unknown = number,
+  decode: (value: Cell) => unknown = number,
   from = 0,
   to = window.len,
 ): string {
@@ -281,7 +303,7 @@ async function checkCounts(
             (at + 1) * channel.num_labels,
           ),
         ).join(","),
-      (row) => (row as number[]).join(","),
+      (row) => numbers(row).join(","),
     ),
   ).toBe("");
 }
@@ -306,7 +328,7 @@ async function checkEvents(
   const column = (
     name: string,
     values: ArrayLike<unknown> | undefined,
-    decode?: (value: unknown) => unknown,
+    decode?: (value: Cell) => unknown,
   ): void => {
     if (window.rows[name] === undefined) {
       expect(values).toBeUndefined();
@@ -323,7 +345,7 @@ async function checkEvents(
   column(
     "channel_indices",
     events!.channels?.map((ids) => ids.join(",")),
-    (indices) => (indices as number[]).map(idOf).join(","),
+    (indices) => numbers(indices).map(idOf).join(","),
   );
 }
 
