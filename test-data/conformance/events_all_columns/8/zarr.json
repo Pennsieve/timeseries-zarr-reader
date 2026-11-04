@@ -1,0 +1,14 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "continuous",
+      "name": "raw-8",
+      "id": "raw-8",
+      "rate_hz": 1000.0,
+      "offset_us": 0,
+      "unit": "uV"
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

@@ -1,0 +1,21 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "event",
+      "name": "marks",
+      "id": "marks",
+      "unit": "uV",
+      "label_names": [
+        "first",
+        "second"
+      ],
+      "provenance": {
+        "detector": "threshold",
+        "version": "1"
+      },
+      "future_key": "x"
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

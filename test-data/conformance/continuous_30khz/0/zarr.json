@@ -1,0 +1,14 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "continuous",
+      "name": "continuous_30khz",
+      "id": "continuous_30khz",
+      "rate_hz": 30000.0,
+      "offset_us": 0,
+      "unit": "uV"
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

@@ -1,0 +1,22 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "event",
+      "name": "events",
+      "id": "events",
+      "unit": "uV",
+      "label_names": [
+        "spike",
+        "burst",
+        "artifact"
+      ],
+      "max_duration_us": 2000000,
+      "provenance": {
+        "detector": "threshold",
+        "version": "1"
+      }
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

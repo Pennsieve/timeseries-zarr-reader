@@ -100,11 +100,8 @@ Tests sit beside the module they cover, as `src/<module>.test.ts`. The acceptanc
 read `test-data/sample.zarr`, a small bundle committed to the repository;
 `scripts/generate-test-bundle.py` documents its contents and rewrites it with
 `timeseries-zarr-py`. `src/conformance.test.ts` reads the specification's conformance
-fixtures, which `make fixtures` builds in a `timeseries-zarr-py` checkout beside this
-one (or at `TSZ_CONFORMANCE_DIR`), and checks the reader against their manifest.
-`src/reference-bundle.test.ts` reads the paper's reference bundle from a
-`timeseries-zarr-paper` checkout beside this one, or from `TSZ_REFERENCE_BUNDLE`. Both
-are skipped when their bundles are not on disk.
+fixtures from `test-data/conformance/` and checks the reader against their manifest.
+`scripts/sync-conformance-fixtures.py` rebuilds them from `timeseries-zarr-py`.
 
 ## License
 

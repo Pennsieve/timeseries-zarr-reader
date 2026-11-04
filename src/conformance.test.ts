@@ -2,12 +2,11 @@
  * Reads the conformance fixtures of the TS-Zarr specification and checks the reader
  * returns the values their manifest states.
  *
- * `timeseries-zarr-py` publishes the manifest at `conformance/manifest.json` and
- * builds the bundles beside it with `make fixtures`; they are not tracked in git.
- * Skipped when they are not on disk. Set TSZ_CONFORMANCE_DIR to point at the
- * directory, or check the py repository out beside this one and build them there.
+ * `test-data/conformance/` holds the bundles and `manifest.json`.
+ * `scripts/sync-conformance-fixtures.py` regenerates them from
+ * `timeseries-zarr-py`.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -15,11 +14,7 @@ import { collect } from "./test-utils.js";
 import type { ChannelInfo, EventColumn } from "./index.js";
 import { openBundle, StreamingClient } from "./index.js";
 
-const DIR =
-  process.env.TSZ_CONFORMANCE_DIR ??
-  fileURLToPath(
-    new URL("../../timeseries-zarr-py/conformance", import.meta.url),
-  );
+const DIR = fileURLToPath(new URL("../test-data/conformance", import.meta.url));
 
 interface ManifestContinuous {
   index: number;
@@ -92,19 +87,14 @@ interface Manifest {
 }
 
 const MANIFEST = join(DIR, "manifest.json");
-const manifest: Manifest | undefined = existsSync(MANIFEST)
-  ? (JSON.parse(readFileSync(MANIFEST, "utf8")) as Manifest)
-  : undefined;
-const fixtures = Object.entries(manifest?.fixtures ?? {});
-const built = fixtures.every(([, fixture]) =>
-  existsSync(join(DIR, fixture.path, "zarr.json")),
-);
+const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as Manifest;
+const fixtures = Object.entries(manifest.fixtures);
 
 /** The manifest writes NaN as null. */
 const number = (value: number | null): number => value ?? NaN;
 const numbers = (values: Array<number | null>): number[] => values.map(number);
 
-describe.skipIf(fixtures.length === 0 || !built)("conformance fixtures", () => {
+describe("conformance fixtures", () => {
   const open = async (fixture: Fixture) =>
     new StreamingClient({ store: await openBundle(join(DIR, fixture.path)) });
 
