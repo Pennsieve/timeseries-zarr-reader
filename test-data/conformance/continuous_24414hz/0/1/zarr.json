@@ -1,0 +1,9 @@
+{
+  "attributes": {
+    "tsz": {
+      "period_us": 163.84
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

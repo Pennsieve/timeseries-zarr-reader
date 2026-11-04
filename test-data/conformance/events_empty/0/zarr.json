@@ -1,0 +1,21 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "event",
+      "name": "events_empty",
+      "id": "events_empty",
+      "unit": "uV",
+      "label_names": [
+        "first",
+        "second"
+      ],
+      "max_duration_us": 0,
+      "provenance": {
+        "detector": "threshold",
+        "version": "1"
+      }
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

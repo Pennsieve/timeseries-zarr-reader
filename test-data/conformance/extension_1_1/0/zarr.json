@@ -1,0 +1,21 @@
+{
+  "attributes": {
+    "tsz": {
+      "kind": "continuous",
+      "name": "wide",
+      "id": "wide",
+      "rate_hz": 1000.0,
+      "offset_us": 0,
+      "unit": "uV",
+      "future_key": {
+        "nested": [
+          1,
+          2,
+          3
+        ]
+      }
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}
