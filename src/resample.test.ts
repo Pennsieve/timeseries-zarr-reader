@@ -115,6 +115,45 @@ test("lands windows split mid-bucket on one shared grid", () => {
   expect(Array.from(right.data)).toEqual([6, 7, 8, 9]);
 });
 
+test("keeps every pixel when the start rounds onto a bucket edge", () => {
+  // 30 kHz, 2 samples per bin, starting at bin 85. The quotient of the start by
+  // the pixel width rounds up to a whole number, so the grid start is above the
+  // segment start in binary64.
+  const bins = 170;
+  const data = new Float64Array(bins * 2);
+  for (let bin = 0; bin < bins; bin++) {
+    data[bin * 2] = -1 - bin;
+    data[bin * 2 + 1] = 1 + bin;
+  }
+  const segment = makeSegment({
+    startUs: 5666.666666666667,
+    samplePeriodUs: 66.66666666666667,
+    isMinMax: true,
+    data,
+  });
+
+  const out = resampleToPixels(segment, 283.33333333333337, 0);
+
+  expect(out.startUs).toBeCloseTo(segment.startUs, 6);
+  expect(out.data.length).toBe(80);
+  expect(out.data.some(Number.isNaN)).toBe(false);
+});
+
+test("keeps every pixel of a raw segment at a fractional pixel width", () => {
+  // 512 Hz from sample 400, over a pixel width that is not a multiple of the
+  // sample period.
+  const segment = makeSegment({
+    startUs: 781250,
+    samplePeriodUs: 1953.125,
+    data: Float64Array.from({ length: 100 }, (_, index) => index),
+  });
+
+  const out = resampleToPixels(segment, 9191.176470588236, 0);
+
+  expect(out.startUs).toBeCloseTo(segment.startUs, 6);
+  expect(out.data.some(Number.isNaN)).toBe(false);
+});
+
 /** Count, mean, and population variance of the finite values, in binary64. */
 function direct(values: readonly number[]) {
   const finite = values.filter(Number.isFinite);

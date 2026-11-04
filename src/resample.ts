@@ -46,16 +46,15 @@ export function resampleToPixels(
 
   const valuesPerBin = isMinMax ? 2 : 1;
   const binCount = data.length / valuesPerBin;
-  const startUs =
-    anchorUs +
-    Math.floor((segment.startUs - anchorUs) / pixelWidthUs) * pixelWidthUs;
-  const offsetUs = segment.startUs - startUs;
-  const pixelCount =
-    binCount === 0
-      ? 0
-      : Math.floor(
-          (offsetUs + (binCount - 1) * samplePeriodUs) / pixelWidthUs,
-        ) + 1;
+  // Every bin, the first included, takes its pixel from one expression, so the
+  // first bin is always pixel 0.
+  const firstPixel = Math.floor((segment.startUs - anchorUs) / pixelWidthUs);
+  const startUs = anchorUs + firstPixel * pixelWidthUs;
+  const pixelOf = (bin: number): number =>
+    Math.floor(
+      (segment.startUs + bin * samplePeriodUs - anchorUs) / pixelWidthUs,
+    ) - firstPixel;
+  const pixelCount = binCount === 0 ? 0 : pixelOf(binCount - 1) + 1;
   const out = new Float64Array(pixelCount * 2);
 
   const stats = createStatistics(segment, members, pixelCount);
@@ -67,10 +66,7 @@ export function resampleToPixels(
     const firstBin = bin;
     let min = Infinity;
     let max = -Infinity;
-    while (
-      bin < binCount &&
-      Math.floor((offsetUs + bin * samplePeriodUs) / pixelWidthUs) === pixel
-    ) {
+    while (bin < binCount && pixelOf(bin) === pixel) {
       const end = (bin + 1) * valuesPerBin;
       for (let i = bin * valuesPerBin; i < end; i++) {
         const value = data[i]!;
