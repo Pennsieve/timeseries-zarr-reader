@@ -195,13 +195,13 @@ describe("decodeText", () => {
   });
 
   test("decodes multi-byte UTF-8", () => {
-    const rows = Uint8Array.from(bytes("µV ok", 8));
-    expect(decodeText(rows, 8, 1)).toEqual(["µV ok"]);
+    const rows = Uint8Array.from(bytes("\u00b5V ok", 8));
+    expect(decodeText(rows, 8, 1)).toEqual(["\u00b5V ok"]);
   });
 
   test("replaces invalid UTF-8 rather than throwing", () => {
     const rows = Uint8Array.from([0xff, 0x61, 0, 0]);
-    expect(decodeText(rows, 4, 1)).toEqual(["�a"]);
+    expect(decodeText(rows, 4, 1)).toEqual(["\ufffda"]);
   });
 
   test("returns no rows for a count of zero", () => {
@@ -390,7 +390,7 @@ const MARKS: FixtureEvent = {
   durations: [60_000, 0, 10_000, 0],
   labels: [0, 1, 2, 1],
   values: [0.5, 0.25, 0.75, 1],
-  text: ["sz onset", "", "note: µV", '{"k":1}'],
+  text: ["sz onset", "", "note: \u00b5V", '{"k":1}'],
   channels: [[0], [], [0, 1], [7]],
 };
 
@@ -414,7 +414,7 @@ describe("queryEventChannel: intervals and text", () => {
     expect(Array.from(window.durations!)).toEqual([60_000, 10_000]);
     expect(Array.from(window.labels!)).toEqual([0, 2]);
     expect(Array.from(window.values!)).toEqual([0.5, 0.75]);
-    expect(window.text).toEqual(["sz onset", "note: µV"]);
+    expect(window.text).toEqual(["sz onset", "note: \u00b5V"]);
   });
 
   test("drops an interval that ended exactly at the window start and keeps a point event there", async () => {
