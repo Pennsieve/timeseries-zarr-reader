@@ -2,8 +2,8 @@
  * Reads the windows recorded in `test-data/parity.json` through the public API and
  * checks each result against what the Python reader returned for the same window.
  *
- * `scripts/generate-parity-golden.py` regenerates the golden file from
- * `timeseries-zarr-py`.
+ * `scripts/generate-parity-golden.py` regenerates the golden file with the
+ * `timeseries-zarr` release that `scripts/requirements.txt` pins.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

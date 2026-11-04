@@ -3,8 +3,8 @@
  * returns the values their manifest states.
  *
  * `test-data/conformance/` holds the bundles and `manifest.json`.
- * `scripts/sync-conformance-fixtures.py` regenerates them from
- * `timeseries-zarr-py`.
+ * `scripts/sync-conformance-fixtures.py` regenerates them from the
+ * `timeseries-zarr` release that `scripts/requirements.txt` pins.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

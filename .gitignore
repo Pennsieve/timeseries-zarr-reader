@@ -37,3 +37,6 @@ yarn-debug.log*
 # Agent tooling (dev-only, not shipped)
 CLAUDE.md
 .claude/
+
+# Python environment for the scripts
+.venv/

@@ -103,12 +103,14 @@ pnpm format:check  # prettier --check (read-only)
 `src/index.ts` re-exports the public API and `src/client.ts` holds `StreamingClient`.
 Tests sit beside the module they cover, as `src/<module>.test.ts`. The acceptance tests
 read `test-data/sample.zarr`, a small bundle committed to the repository;
-`scripts/generate-test-bundle.py` documents its contents and rewrites it with
-`timeseries-zarr-py`. `src/conformance.test.ts` reads the specification's conformance
-fixtures from `test-data/conformance/` and checks the reader against their manifest.
-`scripts/sync-conformance-fixtures.py` rebuilds them from `timeseries-zarr-py`.
-`src/parity.test.ts` compares reads bit for bit with `test-data/parity.json`, which
-`scripts/generate-parity-golden.py` records from the Python reader.
+`scripts/generate-test-bundle.py` documents its contents and rewrites it.
+`src/conformance.test.ts` reads the specification's conformance fixtures from
+`test-data/conformance/` and checks the reader against their manifest.
+`scripts/sync-conformance-fixtures.py` rebuilds them. `src/parity.test.ts`
+compares reads bit for bit with `test-data/parity.json`, which
+`scripts/generate-parity-golden.py` records from the Python reader. The three
+scripts use the `timeseries-zarr` release that `scripts/requirements.txt` pins.
+Run them in an environment that has installed that file.
 
 ## License
 
