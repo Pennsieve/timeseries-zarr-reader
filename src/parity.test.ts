@@ -333,6 +333,16 @@ describe("parity with the Python reader", () => {
       const prefix = `${name}/${channel.id}`;
       const open = () => clientFor(name, bundle.path);
       if (channel.kind === "continuous") {
+        test(`reads ${prefix} end time`, async () => {
+          const infos = await (await open()).channelInfo();
+          const info = infos.find(
+            (candidate) => candidate.index === channel.index,
+          );
+          if (info?.kind !== "continuous") {
+            throw new Error(`${prefix} is not a continuous channel`);
+          }
+          expect(info.endUs).toBe(channel.end_us);
+        });
         for (const window of channel.cases) {
           test(`reads ${prefix} window ${window.id}`, async () => {
             await checkContinuous(await open(), channel, window);
