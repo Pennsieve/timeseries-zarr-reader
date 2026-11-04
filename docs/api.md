@@ -161,8 +161,9 @@ finite samples of each pixel. A raw segment that was not resampled carries
 none, as does every trace of a montage or a filter query. An unknown member
 name rejects with `RangeError` before any read starts.
 
-Each statistic is a separate array. Its read runs under the same in-flight cap
-and with the same `signal` as the min/max read, and adds a round trip.
+Each statistic is a separate array. Its read starts together with the min/max
+read, under the same in-flight cap and with the same `signal`. It adds one
+request and takes one in-flight slot. It adds no sequential latency.
 
 ### The raw-read byte cap
 
