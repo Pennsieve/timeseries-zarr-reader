@@ -218,7 +218,7 @@ export function binEdgeUs(
 }
 
 /**
- * Returns the time just after the last of `sampleCount` samples that start at
+ * Returns the end of the last of `sampleCount` samples that start at
  * `offsetUs`, rounded up to a whole microsecond.
  *
  * A window from `offsetUs` to this time holds every sample.
