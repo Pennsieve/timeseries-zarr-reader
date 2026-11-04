@@ -423,8 +423,8 @@ export class StreamingClient {
    * unknown channel id, an event channel, a montage pair whose rates or sample grids
    * differ, a filter spec outside a trace's Nyquist range, a non-positive `pixelWidthUs`,
    * or an `endUs` before `startUs`. Every rejection of the request itself happens before
-   * any read starts. Calling `query` does not throw; rejections arrive on the first
-   * iteration.
+   * any sample is read. A raw read of a channel with runs first reads its runs table.
+   * Calling `query` does not throw; rejections arrive on the first iteration.
    *
    * A read that fails rejects the iteration and cancels the reads of the traces not yet
    * yielded, as does a consumer that stops iterating early.
