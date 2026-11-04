@@ -728,8 +728,9 @@ export class StreamingClient {
    * and stay inside the channel's `startUs` and `endUs`.
    *
    * A channel without levels reads its raw samples, and a sample is populated when it is
-   * finite. A channel with runs then places each sample at its exact time. Throws for an
-   * unknown channel id, an event channel, or an `endUs` before `startUs`.
+   * finite. A channel with runs then places each sample at its exact time. That read is
+   * bounded by `maxRawBytes` and rejects with {@link RawReadTooLargeError} past it. Throws
+   * for an unknown channel id, an event channel, or an `endUs` before `startUs`.
    */
   async dataSpans(
     params: DataSpanOptions,
@@ -757,6 +758,7 @@ export class StreamingClient {
       exactRuns === undefined
         ? planRead(entry, level, params).range
         : runIndexRange(params, exactRuns, offsetUs, rateHz, level.binCount);
+    requireWithinByteCap(readBytes({ level, range }), this.#maxRawBytes);
     const populated = await this.#limit(priority, () =>
       readCoverage(store, level, range, opts),
     );
@@ -1089,13 +1091,18 @@ function assertWithinByteCap(
       (trace.secondaryRead === undefined ? 0 : readBytes(trace.secondaryRead)),
     0,
   );
+  requireWithinByteCap(requestedBytes, cap);
+}
+
+/** Throws {@link RawReadTooLargeError} when `requestedBytes` exceeds `cap`. */
+function requireWithinByteCap(requestedBytes: number, cap: number): void {
   if (requestedBytes > cap) {
     throw new RawReadTooLargeError(requestedBytes, cap);
   }
 }
 
-/** Returns the size of a planned raw-level read in bytes, and 0 for a min/max level. */
-function readBytes(read: PlannedRead): number {
+/** Returns the size of a raw-level read in bytes, and 0 for a min/max level. */
+function readBytes(read: Pick<PlannedRead, "level" | "range">): number {
   if (read.level.isMinMax) {
     return 0;
   }

@@ -171,7 +171,8 @@ request and takes one in-flight slot. It adds no sequential latency.
 figure counted is the uncompressed size of the raw samples read, summed across
 traces, and both sides of a montage pair count. The samples of a pause are not
 read and not counted. A pixel width that selects a min/max level reads a bounded
-number of bins and is not counted.
+number of bins and is not counted. [`dataSpans()`](#dataspansoptions) on a
+channel without levels reads raw samples and counts the same way.
 
 A read over the cap rejects with `RawReadTooLargeError` before fetching anything. The
 error carries `requestedBytes` and `maxBytes`. Narrow the window or raise `maxRawBytes`.
@@ -367,8 +368,10 @@ bridged into one span. The default of 0 splits on every gap.
 
 A channel without levels reads its raw samples instead. A sample is populated
 when it is finite, and a channel with runs places each sample at its exact time,
-so the edges of a pause are exact. On a level, the edges of a pause fall on bin
-boundaries, and [`runs()`](#runsoptions) gives them exactly.
+so the edges of a pause are exact. That read is capped by the client's
+`maxRawBytes` and rejects with `RawReadTooLargeError` past it. On a level, the
+edges of a pause fall on bin boundaries, and [`runs()`](#runsoptions) gives
+them exactly.
 
 ## `runs(options)`
 

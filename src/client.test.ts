@@ -1691,6 +1691,27 @@ describe("dataSpans", () => {
     ).toEqual([[1_000_000, 1_008_000]]);
   });
 
+  test("caps the raw read of a channel without levels", async () => {
+    const window = { startUs: 1_000_000, endUs: 1_008_000 };
+
+    await expect(
+      makeClient(16).dataSpans({ channel: "r", ...window }),
+    ).rejects.toMatchObject({
+      name: "RawReadTooLargeError",
+      requestedBytes: 32,
+      maxBytes: 16,
+    });
+    await expect(
+      makeClient(32).dataSpans({ channel: "r", ...window }),
+    ).resolves.toEqual([[1_000_000, 1_008_000]]);
+  });
+
+  test("does not cap the read of a level", async () => {
+    await expect(
+      makeClient(1).dataSpans({ channel: "g", ...FULL }),
+    ).resolves.toHaveLength(3);
+  });
+
   test("rejects an event channel", async () => {
     const client = makeClient();
     await expect(client.dataSpans({ channel: "u", ...FULL })).rejects.toThrow(
