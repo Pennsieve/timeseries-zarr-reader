@@ -187,7 +187,7 @@ describe("binIndexRange", () => {
       }
     });
 
-    test("includes the entry that starts just before a whole-microsecond bound", () => {
+    test("includes the entry that starts less than one microsecond before a bound", () => {
       // Sample 1 starts at 33.33 us, so a window from 34 us holds it.
       expect(grid(EPOCH_US + 34, EPOCH_US + 67)).toEqual({ start: 1, end: 3 });
       expect(grid(EPOCH_US + 33, EPOCH_US + 34)).toEqual({ start: 0, end: 2 });
