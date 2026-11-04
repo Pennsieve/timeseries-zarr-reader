@@ -358,9 +358,9 @@ export class StreamingClient {
   /**
    * Returns the bundle's `recording.json`, or undefined when it has none.
    *
-   * Read once and cached for the client's lifetime. A viewer adds `startUs` to a
-   * bundle time to label an axis with wall-clock time. Rejects when the file does
-   * not parse; the next call retries.
+   * Read once and cached for the client's lifetime. A viewer adds
+   * `referenceTimeUs` to a bundle time to label an axis with wall-clock time.
+   * Rejects when the file does not parse; the next call retries.
    */
   recording(): Promise<RecordingInfo | undefined> {
     return (this.#recording ??= this.#loadBundle()

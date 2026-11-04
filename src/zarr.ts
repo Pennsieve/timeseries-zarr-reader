@@ -68,11 +68,8 @@ function matchDtype<D extends NumericDtype>(
 /**
  * Flattens a rank-2 read row-major, in the typed array of `dtype`.
  *
- * zarrita returns a read laid out in the array's stored order and reports the strides.
- * An array written with a `transpose` codec comes back column-major, and flattening
- * that as is would silently pair the wrong values: a bin's min with another bin's max,
- * text swapped between events. No producer we read writes a transpose codec, but the
- * format allows any codec. A row-major read is returned as it is.
+ * Returns the read itself when it is already row-major. Otherwise returns a
+ * row-major copy, as when a `transpose` codec stored the array column-major.
  */
 function flattenRows<D extends NumericDtype>(
   dtype: D,
