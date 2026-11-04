@@ -289,8 +289,9 @@ export interface StoreOptions {
  * Both reads resolve to `undefined` for an absent key. Implementations own
  * authentication and transport.
  *
- * `getRange` is required. Every bundle array is sharded, and reading a shard
- * fetches its index and then the inner chunk as byte ranges.
+ * `getRange` is required. Producers should shard their arrays, and reading a shard
+ * fetches its index and then the inner chunk as byte ranges. The reader also reads
+ * plain arrays.
  */
 export interface Store {
   get(key: `/${string}`, opts?: StoreOptions): Promise<Uint8Array | undefined>;
