@@ -230,6 +230,10 @@ start of the first sample or bin overlapping the window, and a bin read can run
 up to one bin past `endUs`. A window overlapping no data yields a segment with
 empty `data` and a `startUs` clamped to the nearest channel edge.
 
+Overlap is exact: the reader compares a bound with each edge as a rational
+number. A bound taken from the binary64 time of a sample, which rounds, can
+admit the neighboring sample at that edge.
+
 A gap inside a trace arrives as NaN values inside its segment. A chunk the
 producer omitted reads as NaN too, which is what the format defines for a span
 that was never recorded. A resampled pixel bucket with no finite value comes
