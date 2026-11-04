@@ -100,6 +100,8 @@ Passing both or neither throws. The rest of the options:
   must lie strictly between 0 and the channel's Nyquist frequency, and the band forms
   require `lowHz < highHz`. A spec outside those bounds rejects with `RangeError`.
 - `raw`: `true` returns raw samples with no decimation or resampling. Defaults to `false`.
+- `members`: the per-bin statistics to read beside the envelope, any of
+  `"mean"`, `"var"`, and `"count"`. See [Bin statistics](#bin-statistics).
 - `maxRawBytes`: byte-cap override for this query.
 - `signal`: an `AbortSignal` that cancels in-flight reads.
 
@@ -111,7 +113,8 @@ The reader picks the coarsest pyramid level whose bins fit within one pixel, fal
 back to the finest level when none fits. Levels are ordered by their `period_us`; the
 factor between consecutive levels is whatever the producer chose, and nothing assumes 4. Segments from a coarse level carry interleaved `[min, max, ...]` envelope pairs
 from the level's `minmax` member and set `isMinMax`; segments from the raw level carry
-samples. A level's `mean` and `var` members are not read.
+samples. A level's `mean`, `var`, and `count` members are read only when the
+query asks for them in `members`.
 
 A level covers a whole number of samples, at least 2, that follows from its `period_us`
 and the channel's `rateHz`. Each level is a multiple of at least 2 times the one
@@ -127,6 +130,38 @@ read `samplePeriodUs` off the segment rather than assuming it equals `pixelWidth
 pixel grid is anchored at the channel start (the lead channel's start for a montage), so
 every window over a channel resamples onto the same buckets and adjacent windows tile one
 bucket apart.
+
+### Bin statistics
+
+`members` names the statistics to read from a level beside its envelope. A
+segment carries each as a `Float64Array` with one value per bin:
+
+| Member    | Segment field | Value                                                |
+| --------- | ------------- | ---------------------------------------------------- |
+| `"count"` | `count`       | Number of finite samples in the bin, a whole number. |
+| `"mean"`  | `mean`        | Arithmetic mean of the finite samples.               |
+| `"var"`   | `variance`    | Population variance of the finite samples.           |
+
+A bin with no finite sample has a `count` of 0 and NaN in `mean` and
+`variance`. A field is present only when the query asked for it and the level
+stores it. `count` is a `Float64Array` so that sums over many bins stay exact.
+
+A segment that was resampled onto pixels carries the statistics of each pixel.
+The reader folds the bins a pixel covers that have a `count` above 0. The
+pixel's `count` is their sum, and its `mean` is the count-weighted mean of
+their means. Its `variance` is the count-weighted mean of each bin's `variance`
+plus the squared distance of the bin's `mean` from the pixel's `mean`. A pixel
+over one such bin copies that bin's values. Folding `mean` or `variance` also
+reads the `count` member, and folding `variance` reads `mean`, even when the
+query does not ask for them. The segment does not carry those.
+
+A raw segment that was resampled onto pixels computes the statistics from the
+finite samples of each pixel. A raw segment that was not resampled carries
+none, as does every trace of a montage or a filter query. An unknown member
+name rejects with `RangeError` before any read starts.
+
+Each statistic is a separate array. Its read runs under the same in-flight cap
+and with the same `signal` as the min/max read, and adds a round trip.
 
 ### The raw-read byte cap
 

@@ -307,7 +307,7 @@ describe("readCatalog: continuous channels", () => {
     expect(catalog.channels[0]!.info.provenance).toEqual(provenance);
   });
 
-  test("ignores tsz keys and level members the format does not define", async () => {
+  test("ignores tsz keys the format does not define and records the level's member paths", async () => {
     const catalog = await readCatalog(
       storeOf([
         continuousChannel({
@@ -332,6 +332,8 @@ describe("readCatalog: continuous channels", () => {
       samplesPerBin: 4,
       binCount: 100,
       isMinMax: true,
+      meanPath: "/0/1/mean",
+      variancePath: "/0/1/var",
     });
   });
 

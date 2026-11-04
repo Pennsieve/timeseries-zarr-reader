@@ -23,6 +23,10 @@ export interface LevelInfo {
   readonly isMinMax: boolean;
   /** Absolute store path of the level's `count` member, when it has one. */
   readonly countPath?: `/${string}`;
+  /** Absolute store path of the level's `mean` member, when it has one. */
+  readonly meanPath?: `/${string}`;
+  /** Absolute store path of the level's `var` member, when it has one. */
+  readonly variancePath?: `/${string}`;
 }
 
 /** A per-event column with one value per event: `durations`, `labels`, or `values`. */
@@ -360,8 +364,8 @@ function readContinuous(
     runs = { path: `/${index}/runs`, rows: dims[0] };
   }
 
-  // 3. One level per numbered group. `minmax` is what a trace reads; `count` says how
-  //    much of each bin was recorded. `mean` and `var` are not read. A level's width
+  // 3. One level per numbered group. `minmax` is what a trace reads; `count`, `mean`,
+  //    and `var` describe the finite samples of each bin. A level's width
   //    in samples follows from its `period_us`, and each level nests over the one
   //    before it. The factor between levels is whatever their widths say; nothing
   //    assumes 4.
@@ -436,6 +440,12 @@ function readContinuous(
     };
     if (members?.has("count")) {
       info.countPath = `/${index}/${level}/count`;
+    }
+    if (members?.has("mean")) {
+      info.meanPath = `/${index}/${level}/mean`;
+    }
+    if (members?.has("var")) {
+      info.variancePath = `/${index}/${level}/var`;
     }
     levels.push(info);
   }
