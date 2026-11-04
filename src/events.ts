@@ -1,4 +1,4 @@
-import { MIN_WAVEFORM_PIXELS } from "./constants.js";
+import { EVENTS_SEARCH_LIMIT_BYTES, MIN_WAVEFORM_PIXELS } from "./constants.js";
 import type { EventArrays } from "./catalog.js";
 import type {
   EventColumn,
@@ -24,21 +24,30 @@ export function shouldFetchWaveforms(
   return pixelWidthUs * MIN_WAVEFORM_PIXELS < pointsPerEvent * periodUs;
 }
 
+/** Bytes of one stored timestamp. */
+const BYTES_PER_TIMESTAMP = 8;
+
 /**
- * Returns the index of the first timestamp at or after `timeUs`, by binary
- * search over single-element reads. Returns `reader.count` when every
- * timestamp is earlier.
+ * Returns the index of the first timestamp at or after `timeUs` by bisection
+ * over single-element reads, stopping when the span left fits one inner chunk
+ * of `chunkLength` timestamps. The span is then read once and searched in
+ * memory. Returns `reader.count` when every timestamp is earlier.
+ *
+ * A probe fetches and decodes a whole inner chunk, so inside one chunk a
+ * single read costs less than further probes. `opts` goes to every read.
  */
 export async function firstIndexAtOrAfter(
   reader: TimestampReader,
+  chunkLength: number,
   timeUs: number,
+  opts?: StoreOptions,
 ): Promise<number> {
   let low = 0;
   let high = reader.count;
-  while (low < high) {
+  while (high - low > chunkLength) {
     // Not `(low + high) >>> 1`, which wraps past 2^32 elements.
     const middle = low + Math.floor((high - low) / 2);
-    const probe = await reader.read(middle, middle + 1);
+    const probe = await reader.read(middle, middle + 1, opts);
     // middle < high <= reader.count, so the single-element read is never empty.
     if (probe[0]! < timeUs) {
       low = middle + 1;
@@ -46,7 +55,71 @@ export async function firstIndexAtOrAfter(
       high = middle;
     }
   }
+  const span = await reader.read(low, high, opts);
+  return low + searchSorted(span, timeUs);
+}
+
+/**
+ * Returns the index of the first entry of the ascending `times` at or after
+ * `value`.
+ */
+function searchSorted(times: Float64Array, value: number): number {
+  let low = 0;
+  let high = times.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (times[middle]! < value) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
   return low;
+}
+
+/** The times of one event channel, searchable by time. */
+export interface EventTimes {
+  /** Total events in the channel. */
+  readonly count: number;
+  /**
+   * Returns the index of the first event at or after `timeUs`, or `count` when
+   * every event is earlier.
+   */
+  firstIndexAtOrAfter(timeUs: number, opts?: StoreOptions): Promise<number>;
+  /** Returns the times of events `start` through `end - 1`, as a copy. */
+  read(start: number, end: number, opts?: StoreOptions): Promise<Float64Array>;
+}
+
+/**
+ * Opens an event channel's times for searching.
+ *
+ * An array of at most {@link EVENTS_SEARCH_LIMIT_BYTES} bytes is read whole
+ * here, once, and every search and read after it is served from memory without
+ * a request. A larger array is searched by {@link firstIndexAtOrAfter} against
+ * the store. The whole read carries `opts.signal`, so a caller that shares the
+ * result across queries opens it without a signal.
+ */
+export async function openEventTimes(
+  store: Store,
+  events: EventArrays["events"],
+  opts?: StoreOptions,
+): Promise<EventTimes> {
+  const reader = await openTimestamps(store, events.path, opts);
+  if (reader.count * BYTES_PER_TIMESTAMP > EVENTS_SEARCH_LIMIT_BYTES) {
+    return {
+      count: reader.count,
+      firstIndexAtOrAfter: (timeUs, readOpts) =>
+        firstIndexAtOrAfter(reader, events.chunkLength, timeUs, readOpts),
+      read: (start, end, readOpts) => reader.read(start, end, readOpts),
+    };
+  }
+  const times = await reader.read(0, reader.count, opts);
+  return {
+    count: times.length,
+    firstIndexAtOrAfter: (timeUs) =>
+      Promise.resolve(searchSorted(times, timeUs)),
+    read: (start, end) => Promise.resolve(times.slice(start, end)),
+  };
 }
 
 /**
@@ -170,6 +243,9 @@ function keepRows(
  * `channels` column is resolved from channel indices to ids through `idByIndex`; an
  * index with no channel in the bundle is returned as the index itself. Waveforms are
  * read only when the window holds events and the pixel gate admits them.
+ *
+ * `eventTimes` is the channel's opened event times, which a caller reading the
+ * channel repeatedly shares. Absent, the call opens them itself.
  */
 export async function queryEventChannel(
   store: Store,
@@ -178,8 +254,10 @@ export async function queryEventChannel(
   idByIndex: ReadonlyMap<number, string>,
   query: EventQuery,
   opts?: StoreOptions,
+  eventTimes?: EventTimes,
 ): Promise<EventWindow> {
-  const events = await openTimestamps(store, arrays.events.path, opts);
+  const events =
+    eventTimes ?? (await openEventTimes(store, arrays.events, opts));
   const wanted = new Set<EventColumn>(query.columns ?? storedColumns(arrays));
 
   // 1. Find the index span. A channel with durations searches back by its bound.
@@ -190,8 +268,8 @@ export async function queryEventChannel(
   const [searchStart, end] = await Promise.all([
     lookbackUs === Infinity
       ? 0
-      : firstIndexAtOrAfter(events, query.startUs - lookbackUs),
-    firstIndexAtOrAfter(events, query.endUs),
+      : events.firstIndexAtOrAfter(query.startUs - lookbackUs, opts),
+    events.firstIndexAtOrAfter(query.endUs, opts),
   ]);
   const start = Math.min(searchStart, end);
   const span = { start, end };
@@ -201,7 +279,7 @@ export async function queryEventChannel(
   //    before the window start. A point event there is in the window; an interval
   //    is half-open and is not. `kept` stays undefined when nothing was dropped.
   const [times, durations] = await Promise.all([
-    events.read(start, end),
+    events.read(start, end, opts),
     arrays.durations === undefined
       ? undefined
       : openTimestamps(store, arrays.durations.path, opts).then((reader) =>

@@ -48,3 +48,10 @@ export const RESAMPLE_PIXEL_RATIO = 3;
  * be fetched.
  */
 export const MIN_WAVEFORM_PIXELS = 10;
+
+/**
+ * Largest event array, in bytes, that a client reads whole and searches in
+ * memory. A larger array is bisected with single-element reads until the span
+ * fits one inner chunk.
+ */
+export const EVENTS_SEARCH_LIMIT_BYTES = 1024 * 1024;

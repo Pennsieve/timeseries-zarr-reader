@@ -263,6 +263,8 @@ export interface FixtureEvent {
   tsz: Record<string, unknown>;
   /** Event times in microseconds, written as int64. */
   events: number[];
+  /** Events per `events` chunk. Defaults to one chunk. */
+  eventsChunkLength?: number;
   durations?: number[];
   labels?: number[];
   values?: number[];
@@ -441,7 +443,14 @@ export function bundleFiles(
     }
 
     const n = channel.events.length;
-    array(`${key}/events`, channel.events, [n], "int64");
+    array(
+      `${key}/events`,
+      channel.events,
+      [n],
+      "int64",
+      {},
+      channel.eventsChunkLength,
+    );
     if (channel.durations) {
       array(`${key}/durations`, channel.durations, [n], "int64");
     }

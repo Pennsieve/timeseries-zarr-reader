@@ -645,6 +645,50 @@ describe("readCatalog: level structure", () => {
 });
 
 describe("readCatalog: event channels", () => {
+  /** Rewrites the consolidated metadata of channel 2's `events` array. */
+  const withEventsNode = (edit: (node: Record<string, unknown>) => void) => {
+    const { root, files } = rootOf([eventChannel()]);
+    edit(root.consolidated_metadata.metadata["2/events"]!);
+    files["/zarr.json"] = JSON.stringify(root);
+    return createMemoryStore(files);
+  };
+
+  test("records the chunk length of an unsharded events array", async () => {
+    const store = createMemoryStore(
+      bundleFiles([{ ...eventChannel(), eventsChunkLength: 2 }]),
+    );
+    const entry = (await readCatalog(store)).byId.get("ch-9")![0]!;
+    if (entry.kind !== "event") throw new Error("unreachable");
+    expect(entry.arrays.events.chunkLength).toBe(2);
+  });
+
+  test("records the inner chunk length of a sharded events array", async () => {
+    const store = withEventsNode((node) => {
+      node.chunk_grid = {
+        name: "regular",
+        configuration: { chunk_shape: [4096] },
+      };
+      node.codecs = [
+        {
+          name: "sharding_indexed",
+          configuration: { chunk_shape: [512], codecs: [] },
+        },
+      ];
+    });
+    const entry = (await readCatalog(store)).byId.get("ch-9")![0]!;
+    if (entry.kind !== "event") throw new Error("unreachable");
+    expect(entry.arrays.events.chunkLength).toBe(512);
+  });
+
+  test("rejects an events array with no chunk shape", async () => {
+    const store = withEventsNode((node) => {
+      delete node.chunk_grid;
+    });
+    await expect(readCatalog(store)).rejects.toThrow(
+      /events must declare a chunk shape/,
+    );
+  });
+
   test("enumerates a minimal event channel", async () => {
     const catalog = await readCatalog(storeOf([eventChannel()]));
 
@@ -663,7 +707,7 @@ describe("readCatalog: event channels", () => {
     });
     if (entry!.kind !== "event") throw new Error("unreachable");
     expect(entry!.arrays).toEqual({
-      events: { path: "/2/events", count: 3 },
+      events: { path: "/2/events", count: 3, chunkLength: 3 },
       countLevels: [],
     });
   });
@@ -729,7 +773,7 @@ describe("readCatalog: event channels", () => {
     });
     if (entry.kind !== "event") throw new Error("unreachable");
     expect(entry.arrays).toEqual({
-      events: { path: "/2/events", count: 3 },
+      events: { path: "/2/events", count: 3, chunkLength: 3 },
       durations: { path: "/2/durations", maxDurationUs: 50_000 },
       labels: { path: "/2/labels" },
       values: { path: "/2/values" },

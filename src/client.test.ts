@@ -1241,6 +1241,169 @@ describe("queryEvents", () => {
   });
 });
 
+describe("queryEvents reads", () => {
+  const UNITS = { channels: ["u"], startUs: 1_003_000, endUs: 1_009_000 };
+
+  test("sends no request for the search on a second query of a cached channel", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({
+      store: counting.store,
+      maxCacheBytes: 0,
+    });
+    const query = { ...UNITS, columns: [] };
+
+    const first = await collectOne(client.queryEvents(query));
+    const afterFirst = counting.total();
+    expect(counting.reads.get("/5/events/c/0")).toBe(1);
+    const second = await collectOne(client.queryEvents(query));
+
+    expect(counting.total()).toBe(afterFirst);
+    expect(second.times).toEqual(first.times);
+  });
+
+  test("shares one read of the times between concurrent queries", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({
+      store: counting.store,
+      maxCacheBytes: 0,
+    });
+
+    await Promise.all([
+      collect(client.queryEvents(UNITS)),
+      collect(client.queryEvents(UNITS)),
+    ]);
+
+    expect(counting.reads.get("/5/events/c/0")).toBe(1);
+  });
+
+  test("starts every channel's read before the first window is yielded", async () => {
+    const held = withHeldKeys(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      new Set(["/10/durations/c/0"]),
+    );
+    const counting = createCountingStore(held.store);
+    const client = new StreamingClient({ store: counting.store });
+    const abort = new AbortController();
+
+    void collect(
+      client.queryEvents({
+        channels: ["k", "u"],
+        ...FULL,
+        signal: abort.signal,
+      }),
+    ).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // "k" is held on its durations, so no window can be yielded. "u" has been read.
+    expect(held.signals.has("/10/durations/c/0")).toBe(true);
+    expect(counting.reads.get("/5/events/c/0")).toBe(1);
+    abort.abort();
+    expect(held.signals.get("/10/durations/c/0")?.aborted).toBe(true);
+  });
+
+  test("cancels the reads of unconsumed channels when the consumer stops iterating", async () => {
+    const held = withHeldKeys(
+      createMemoryStore(bundleFiles(CHANNELS)),
+      new Set(["/10/durations/c/0"]),
+    );
+    const client = new StreamingClient({ store: held.store });
+
+    for await (const window of client.queryEvents({
+      channels: ["u", "k"],
+      ...FULL,
+    })) {
+      expect(window.channel).toBe("u");
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(held.signals.get("/10/durations/c/0")?.aborted).toBe(true);
+  });
+
+  test("yields windows in request order whichever read finishes first", async () => {
+    const client = makeClient();
+    const windows = await collect(
+      client.queryEvents({ channels: ["u", "k", "u"], ...FULL }),
+    );
+    expect(windows.map((window) => window.channel)).toEqual(["u", "k", "u"]);
+  });
+
+  test("rejects an unknown channel before any read starts", async () => {
+    const counting = createCountingStore(
+      createMemoryStore(bundleFiles(CHANNELS)),
+    );
+    const client = new StreamingClient({ store: counting.store });
+    await client.channelInfo();
+    const before = counting.total();
+
+    await expect(
+      collect(client.queryEvents({ channels: ["u", "nope"], ...FULL })),
+    ).rejects.toThrow(/no channel with id nope/);
+    expect(counting.total()).toBe(before);
+  });
+
+  test("retries the times read after a failed one", async () => {
+    let failures = 1;
+    const inner = createMemoryStore(bundleFiles(CHANNELS));
+    const store: Store = {
+      get: (key, opts) =>
+        key === "/5/events/c/0" && failures-- > 0
+          ? Promise.reject(new Error("transport failure"))
+          : inner.get(key, opts),
+      getRange: (key, range, opts) => inner.getRange(key, range, opts),
+    };
+    const client = new StreamingClient({ store, maxCacheBytes: 0 });
+
+    await expect(collect(client.queryEvents(UNITS))).rejects.toThrow(
+      "transport failure",
+    );
+    const window = await collectOne(client.queryEvents(UNITS));
+    expect(Array.from(window.times)).toEqual([1_005_000, 1_005_500]);
+  });
+
+  describe("a channel past the whole-read limit", () => {
+    const count = 140_000;
+    const BIG: FixtureChannel[] = [
+      {
+        index: 0,
+        tsz: { kind: "event", id: "big", name: "Big" },
+        events: Array.from({ length: count }, (_, i) => i * 1000),
+        eventsChunkLength: 4096,
+      },
+    ];
+
+    test("reads a window without reading the whole array", async () => {
+      const counting = createCountingStore(createMemoryStore(bundleFiles(BIG)));
+      const client = new StreamingClient({
+        store: counting.store,
+        maxCacheBytes: 0,
+      });
+
+      const window = await collectOne(
+        client.queryEvents({
+          channels: ["big"],
+          startUs: 100_000_000,
+          endUs: 100_004_000,
+        }),
+      );
+
+      expect(Array.from(window.times)).toEqual([
+        100_000_000, 100_001_000, 100_002_000, 100_003_000,
+      ]);
+      // Two searches of at most 6 probes and a 2-chunk span each, and one window read.
+      expect(counting.reads.get("/0/events/c/24")).toBeDefined();
+      const chunkReads = [...counting.reads.entries()]
+        .filter(([key]) => key.startsWith("/0/events/c/"))
+        .reduce((sum, [, reads]) => sum + reads, 0);
+      expect(chunkReads).toBeLessThanOrEqual(2 * (6 + 2) + 2);
+    });
+  });
+});
+
 describe("eventCounts", () => {
   test("reads the coarsest count level that fits the pixel width", async () => {
     const client = makeClient();

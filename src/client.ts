@@ -23,7 +23,8 @@ import {
   MAX_RAW_BYTES,
   RESAMPLE_PIXEL_RATIO,
 } from "./constants.js";
-import { queryEventChannel } from "./events.js";
+import type { EventTimes } from "./events.js";
+import { openEventTimes, queryEventChannel } from "./events.js";
 import type { PriorityLimit } from "./fetch.js";
 import { createPriorityLimit } from "./fetch.js";
 import type { FilterSession } from "./filter.js";
@@ -265,6 +266,10 @@ type SettledRead =
   | { ok: true; data: Float64Array; members: MemberArrays }
   | { ok: false; error: unknown };
 
+/** An event channel read settled to a window or an error. */
+type SettledWindow =
+  { ok: true; window: EventWindow } | { ok: false; error: unknown };
+
 /** The statistics a level read returned, by their {@link Segment} field. */
 interface MemberArrays {
   mean?: Float64Array;
@@ -315,6 +320,8 @@ export class StreamingClient {
   #recording: Promise<RecordingInfo | undefined> | undefined;
   /** Each channel's runs by channel index, read once per client lifetime. */
   readonly #runs = new Map<number, Promise<Run[]>>();
+  /** Each event channel's times by channel path, opened once per client. */
+  readonly #eventTimes = new Map<string, Promise<EventTimes>>();
 
   constructor(options: StreamingClientOptions) {
     this.#store = options.store;
@@ -556,8 +563,11 @@ export class StreamingClient {
    * `pixelWidthUs` is omitted or one snippet spans more than `MIN_WAVEFORM_PIXELS`
    * pixels.
    *
-   * Channels are read sequentially. Rejects for an unknown channel id, a continuous
-   * channel, a non-positive `pixelWidthUs`, or an `endUs` before `startUs`.
+   * Every channel's read starts before the first window is yielded, under the
+   * in-flight cap, and a channel's event times are read once per client.
+   * Stopping iteration early cancels the reads not yet yielded. Rejects for an
+   * unknown channel id, a continuous channel, a non-positive `pixelWidthUs`, or
+   * an `endUs` before `startUs`, before any read starts.
    */
   async *queryEvents(
     params: EventQueryOptions,
@@ -568,21 +578,56 @@ export class StreamingClient {
     }
     requireWindow(params.startUs, params.endUs);
     const { catalog, store } = await this.#loadBundle();
-    const opts = toStoreOptions(params.signal);
+    const entries = params.channels.map((id) => ({
+      id,
+      entry: eventEntry(catalog, id),
+    }));
+
+    // One signal for every read of the query, as in query().
+    const reads = new AbortController();
+    const forwardAbort = (): void => {
+      reads.abort(params.signal?.reason);
+    };
+    params.signal?.addEventListener("abort", forwardAbort, { once: true });
+    const opts: StoreOptions = { signal: reads.signal };
 
     const priority = params.priority ?? "viewport";
-    for (const id of params.channels) {
-      const entry = eventEntry(catalog, id);
-      yield await this.#limit(priority, () =>
-        queryEventChannel(
-          store,
-          id,
-          entry.arrays,
-          catalog.idByIndex,
-          params,
-          opts,
-        ),
-      );
+    // Settling each read up front avoids unhandled rejections when iteration stops early.
+    const started = entries.map(({ id, entry }) =>
+      this.#limit(priority, async (): Promise<SettledWindow> => {
+        try {
+          const times = await this.#eventTimesOf(store, entry);
+          const window = await queryEventChannel(
+            store,
+            id,
+            entry.arrays,
+            catalog.idByIndex,
+            params,
+            opts,
+            times,
+          );
+          return { ok: true, window };
+        } catch (error) {
+          return { ok: false, error };
+        }
+      }),
+    );
+
+    let drained = false;
+    try {
+      for (const read of started) {
+        const settled = await read;
+        if (!settled.ok) {
+          throw settled.error;
+        }
+        yield settled.window;
+      }
+      drained = true;
+    } finally {
+      params.signal?.removeEventListener("abort", forwardAbort);
+      if (!drained) {
+        reads.abort();
+      }
     }
   }
 
@@ -840,6 +885,31 @@ export class StreamingClient {
         });
       pending = read;
       this.#runs.set(index, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * Returns an event channel's times, opening them on first use. Callers share
+   * one open, so it carries no signal: one caller giving up must not reject the
+   * rest, and the whole-array read is capped at `EVENTS_SEARCH_LIMIT_BYTES`. A
+   * failed open is dropped so the next call retries. Call it from inside an
+   * in-flight slot.
+   */
+  #eventTimesOf(store: Store, entry: EventEntry): Promise<EventTimes> {
+    let pending = this.#eventTimes.get(entry.path);
+    if (pending === undefined) {
+      const open: Promise<EventTimes> = openEventTimes(
+        store,
+        entry.arrays.events,
+      ).catch((error: unknown) => {
+        if (this.#eventTimes.get(entry.path) === open) {
+          this.#eventTimes.delete(entry.path);
+        }
+        throw error;
+      });
+      pending = open;
+      this.#eventTimes.set(entry.path, pending);
     }
     return pending;
   }

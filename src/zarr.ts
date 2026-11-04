@@ -207,8 +207,11 @@ export async function readRows<D extends NumericDtype>(
 export interface TimestampReader {
   /** Total timestamps in the array. */
   readonly count: number;
-  /** Timestamps over a half-open index range, as microsecond numbers. */
-  read(start: number, end: number): Promise<Float64Array>;
+  /**
+   * Timestamps over a half-open index range, as microsecond numbers. `opts`
+   * replaces the options the reader was opened with.
+   */
+  read(start: number, end: number, opts?: StoreOptions): Promise<Float64Array>;
 }
 
 /** The largest int64 magnitude that converts exactly to a number. */
@@ -287,11 +290,11 @@ export async function openTimestamps(
 
   return {
     count: array.shape[0]!,
-    read: async (start, end) => {
+    read: async (start, end, readOpts = opts) => {
       if (end <= start) {
         return new Float64Array(0);
       }
-      const region = await get(array, [slice(start, end)], opts);
+      const region = await get(array, [slice(start, end)], readOpts);
       const values = region.data;
       const out = new Float64Array(values.length);
       for (let i = 0; i < values.length; i++) {

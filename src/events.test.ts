@@ -9,6 +9,7 @@ import {
   decodeChannelIndices,
   decodeText,
   firstIndexAtOrAfter,
+  openEventTimes,
   queryEventChannel,
   shouldFetchWaveforms,
 } from "./events.js";
@@ -29,22 +30,24 @@ test("fetches waveforms only when one waveform spans more than 10 pixels", () =>
 
 test("finds the first timestamp at or after a time", async () => {
   const reader = readerOf([1000, 5000, 5500, 9000]);
-  expect(await firstIndexAtOrAfter(reader, 0)).toBe(0);
-  expect(await firstIndexAtOrAfter(reader, 1000)).toBe(0);
-  expect(await firstIndexAtOrAfter(reader, 1001)).toBe(1);
-  expect(await firstIndexAtOrAfter(reader, 5500)).toBe(2);
-  expect(await firstIndexAtOrAfter(reader, 9001)).toBe(4);
+  expect(await firstIndexAtOrAfter(reader, 2, 0)).toBe(0);
+  expect(await firstIndexAtOrAfter(reader, 2, 1000)).toBe(0);
+  expect(await firstIndexAtOrAfter(reader, 2, 1001)).toBe(1);
+  expect(await firstIndexAtOrAfter(reader, 2, 5500)).toBe(2);
+  expect(await firstIndexAtOrAfter(reader, 2, 9001)).toBe(4);
 });
 
 test("returns 0 for an empty timestamp array", async () => {
-  expect(await firstIndexAtOrAfter(readerOf([]), 5000)).toBe(0);
+  expect(await firstIndexAtOrAfter(readerOf([]), 2, 5000)).toBe(0);
 });
 
 test("returns the first index of a run of duplicate timestamps", async () => {
   // Simultaneous events share a timestamp.
   const reader = readerOf([1000, 5000, 5000, 5000, 9000]);
-  expect(await firstIndexAtOrAfter(reader, 5000)).toBe(1);
-  expect(await firstIndexAtOrAfter(readerOf([5000, 5000, 5000]), 5000)).toBe(0);
+  expect(await firstIndexAtOrAfter(reader, 2, 5000)).toBe(1);
+  expect(await firstIndexAtOrAfter(readerOf([5000, 5000, 5000]), 2, 5000)).toBe(
+    0,
+  );
 });
 
 test("searches past 2^32 timestamps without wrapping the midpoint", async () => {
@@ -59,7 +62,121 @@ test("searches past 2^32 timestamps without wrapping the midpoint", async () => 
       return Promise.resolve(out);
     },
   };
-  expect(await firstIndexAtOrAfter(reader, 3_000_000_000)).toBe(3_000_000_000);
+  expect(await firstIndexAtOrAfter(reader, 2, 3_000_000_000)).toBe(
+    3_000_000_000,
+  );
+});
+
+describe("firstIndexAtOrAfter: probe cost", () => {
+  const count = 1_000_000;
+  const chunkLength = 1024;
+
+  /** A reader over times `10 * i` that records the length of every read. */
+  const countingReader = (): { reader: TimestampReader; lengths: number[] } => {
+    const lengths: number[] = [];
+    return {
+      lengths,
+      reader: {
+        count,
+        read: (start, end) => {
+          lengths.push(end - start);
+          const out = new Float64Array(end - start);
+          for (let i = 0; i < out.length; i++) {
+            out[i] = (start + i) * 10;
+          }
+          return Promise.resolve(out);
+        },
+      },
+    };
+  };
+
+  test("costs at most log2(n / chunk) + 1 probes and one span read", async () => {
+    const bound = Math.log2(count / chunkLength) + 1;
+    for (const index of [0, 1, 1023, 1024, 500_000, 999_999, count]) {
+      const { reader, lengths } = countingReader();
+      expect(await firstIndexAtOrAfter(reader, chunkLength, index * 10)).toBe(
+        index,
+      );
+      const probes = lengths.filter((length) => length === 1).length;
+      const spans = lengths.filter((length) => length > 1);
+      expect(probes).toBeLessThanOrEqual(bound);
+      expect(spans).toHaveLength(1);
+      expect(spans[0]).toBeLessThanOrEqual(chunkLength);
+    }
+  });
+
+  test("reads one span and no probe when the array fits one chunk", async () => {
+    const { reader, lengths } = countingReader();
+    const small: TimestampReader = { ...reader, count: chunkLength };
+    expect(await firstIndexAtOrAfter(small, chunkLength, 5000)).toBe(500);
+    expect(lengths).toEqual([chunkLength]);
+  });
+});
+
+describe("openEventTimes", () => {
+  const countChunkReads = (
+    store: Store,
+    prefix: string,
+  ): { store: Store; reads: () => number } => {
+    let reads = 0;
+    const tally = (key: string): void => {
+      if (key.startsWith(prefix)) reads++;
+    };
+    return {
+      reads: () => reads,
+      store: {
+        get: (key, opts) => {
+          tally(key);
+          return store.get(key, opts);
+        },
+        getRange: (key, range, opts) => {
+          tally(key);
+          return store.getRange(key, range, opts);
+        },
+      },
+    };
+  };
+
+  test("reads a small array whole once and searches it without a request", async () => {
+    const { store, arrays } = await openEvents([SPIKES], "u");
+    const counted = countChunkReads(store, "/5/events/c/");
+    const times = await openEventTimes(counted.store, arrays.events);
+    expect(counted.reads()).toBe(1);
+
+    expect(await times.firstIndexAtOrAfter(5001)).toBe(2);
+    expect(await times.firstIndexAtOrAfter(0)).toBe(0);
+    expect(await times.firstIndexAtOrAfter(9001)).toBe(4);
+    expect(Array.from(await times.read(1, 3))).toEqual([5000, 5500]);
+    expect(counted.reads()).toBe(1);
+  });
+
+  test("returns a copy of a cached range", async () => {
+    const { store, arrays } = await openEvents([SPIKES], "u");
+    const times = await openEventTimes(store, arrays.events);
+    (await times.read(0, 2)).fill(0);
+    expect(Array.from(await times.read(0, 2))).toEqual([2000, 5000]);
+  });
+
+  test("bisects a large array and agrees with a linear scan", async () => {
+    const { store, arrays } = await openEvents([BIG], "big");
+    const counted = countChunkReads(store, "/7/events/c/");
+    const times = await openEventTimes(counted.store, arrays.events);
+    expect(counted.reads()).toBe(0);
+
+    const bound =
+      Math.ceil(Math.log2(BIG_COUNT / arrays.events.chunkLength)) + 1;
+    for (const value of [-5, 0, 1, 999, 1000, 70_000_001, 139_999_000]) {
+      const before = counted.reads();
+      const expected = Math.min(
+        Math.max(Math.ceil(value / 1000), 0),
+        BIG_COUNT,
+      );
+      expect(await times.firstIndexAtOrAfter(value)).toBe(expected);
+      // The span read may straddle two chunks.
+      expect(counted.reads() - before).toBeLessThanOrEqual(bound + 2);
+    }
+    expect(await times.firstIndexAtOrAfter(140_000_000)).toBe(BIG_COUNT);
+  });
 });
 
 describe("decodeText", () => {
@@ -121,6 +238,15 @@ async function openEvents(
   }
   return { store, arrays: entry.arrays, idByIndex: catalog.idByIndex };
 }
+
+/** 140000 events, 10 us apart from 0: 1.1 MB of int64, past the whole-read limit. */
+const BIG_COUNT = 140_000;
+const BIG: FixtureEvent = {
+  index: 7,
+  tsz: { kind: "event", name: "Big", id: "big" },
+  events: Array.from({ length: BIG_COUNT }, (_, i) => i * 1000),
+  eventsChunkLength: 4096,
+};
 
 const SPIKES: FixtureEvent = {
   index: 5,
@@ -202,15 +328,14 @@ describe("queryEventChannel: point events", () => {
     expect(window.waveforms).toBeUndefined();
   });
 
-  test("searches for both window bounds concurrently", async () => {
-    const { store, arrays, idByIndex } = await openEvents([SPIKES], "u");
-    const eventsChunk = "/5/events/c/0";
+  test("searches a large array for both window bounds concurrently", async () => {
+    const { store, arrays, idByIndex } = await openEvents([BIG], "big");
     let inFlight = 0;
     let peakInFlight = 0;
     const tracked: Store = {
       ...store,
       get: async (key, opts) => {
-        if (key !== eventsChunk) {
+        if (!key.startsWith("/7/events/c/")) {
           return store.get(key, opts);
         }
         inFlight++;
@@ -223,14 +348,16 @@ describe("queryEventChannel: point events", () => {
       },
     };
 
-    const window = await queryEventChannel(tracked, "u", arrays, idByIndex, {
+    const window = await queryEventChannel(tracked, "big", arrays, idByIndex, {
       startUs: 3000,
       endUs: 9000,
     });
 
     // Two timestamp reads in flight at once can only come from overlapping searches.
     expect(peakInFlight).toBe(2);
-    expect(Array.from(window.times)).toEqual([5000, 5500]);
+    expect(Array.from(window.times)).toEqual([
+      3000, 4000, 5000, 6000, 7000, 8000,
+    ]);
   });
 
   test("returns no events and no columns for an empty window", async () => {
