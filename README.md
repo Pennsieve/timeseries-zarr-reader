@@ -72,7 +72,12 @@ for await (const events of client.queryEvents({
   `RawReadTooLargeError` before fetching, whether a filter, a montage, or `raw: true`
   forced the raw level or the pixel width selected it.
 - Segments are delivered on bin boundaries, so a segment can start before `startUs`
-  and run past `endUs`.
+  and run past `endUs`. A raw read of a channel that paused and resumed yields one
+  segment per run, each at the run's exact start.
+- `endUs` and every other time are whole microseconds. A channel's `endUs` is one
+  sample period past its last sample, rounded up.
+- `members: ["mean", "var", "count"]` reads per-bin statistics beside the
+  envelope. Channel ids need not be unique; a query that names a shared id rejects.
 - Filters carry state across consecutive windows, so a trace read window by window
   matches the same trace read whole.
 - `query()` reads continuous channels. Event channels are read with `queryEvents()`,
@@ -102,6 +107,8 @@ read `test-data/sample.zarr`, a small bundle committed to the repository;
 `timeseries-zarr-py`. `src/conformance.test.ts` reads the specification's conformance
 fixtures from `test-data/conformance/` and checks the reader against their manifest.
 `scripts/sync-conformance-fixtures.py` rebuilds them from `timeseries-zarr-py`.
+`src/parity.test.ts` compares reads bit for bit with `test-data/parity.json`, which
+`scripts/generate-parity-golden.py` records from the Python reader.
 
 ## License
 

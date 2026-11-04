@@ -31,7 +31,8 @@ that decompresses chunks. The codec module carries its WebAssembly binary inline
 loading it early keeps that download off the first read.
 
 The option-bag types are exported: `StreamingClientOptions`, `QueryOptions`,
-`EventQueryOptions`, `EventCountOptions`, `WaveformMeanOptions`, and `DataSpanOptions`.
+`EventQueryOptions`, `EventCountOptions`, `WaveformMeanOptions`,
+`DataSpanOptions`, and `RunOptions`.
 
 ## `channelInfo()`
 
@@ -308,6 +309,18 @@ can be most of a dense channel's bytes, so a raster view should leave it out. Wa
 are read only when the window holds events and, if `pixelWidthUs` is given, one snippet
 spans more than 10 pixels. Omit `pixelWidthUs` to read them whenever asked for.
 
+The reader finds the first event at or after a time by searching the channel's
+timestamp array. An array of at most 1 MiB is read whole once and searched in
+memory. A larger one is bisected with single-element reads until the span fits
+one inner chunk, then that chunk is read once. The client caches each channel's
+search state for its lifetime and drops it when the open fails, so the next
+query retries.
+
+`queryEvents()` checks every channel before the first read, then reads all of
+them concurrently under `maxInflightFetches`. It yields the windows in request
+order. A consumer that stops iterating early cancels the reads not yet
+yielded.
+
 `queryEvents()` rejects continuous channels, an unknown id, a non-positive
 `pixelWidthUs`, and an `endUs` before `startUs`.
 
@@ -367,8 +380,10 @@ resumed off its sample grid stores one row per run with the exact resume time, w
 the grid can only place to within one sample period. Sample `firstSample + i` of a
 run is at `startUs + i * samplePeriod`, and `endUs` is one period past its last
 sample, exclusive and rounded up to a whole microsecond. A channel without a
-`runs` table is one run from `startUs` over every sample, and an empty channel has none. The table is read once per channel and
-cached for the client's lifetime.
+`runs` table is one run from `startUs` over every sample, and an empty channel
+has none. The table is read once per channel and
+cached for the client's lifetime. The cache is keyed by channel index, so
+channels that share an id do not share a table.
 
 Rejects for an unknown id, an event channel, or a table that breaks the format's
 rules: row 0 must start the channel at `startUs`, runs must be in order without
@@ -421,8 +436,9 @@ type Store = {
 `{ offset, length }` or `{ suffixLength }` for the last bytes of a key. Both methods
 resolve to `undefined` for a missing key.
 
-A custom store must implement `getRange`, including the suffix form. Every array in a
-bundle is sharded, and reading a shard starts by reading its index from the end of the
+A custom store must implement `getRange`, including the suffix form. The format
+says producers should shard their arrays, and the reader reads plain and sharded
+arrays. Reading a shard starts by reading its index from the end of the
 object. A missing key must resolve to `undefined` rather than reject: the format lets a
 producer omit a chunk whose values are all the fill value, and the reader then reads the
 gap as NaN.
